@@ -1,0 +1,15 @@
+[package]
+name = "seedmirror-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+# File watcher
+notify = { version = "8.2.0", features = ["serde"] }
+seedmirror-core = { path = "../seedmirror-core" }
+serde_json.workspace = true
+tokio.workspace = true

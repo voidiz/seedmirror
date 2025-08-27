@@ -1,0 +1,158 @@
+use std::{
+    io::ErrorKind,
+    path::{self, Path, PathBuf},
+};
+
+use anyhow::Context;
+use notify::Event;
+use seedmirror_core::message::Message;
+use tokio::{
+    fs::remove_file,
+    io::AsyncWriteExt,
+    net::{UnixListener, UnixStream},
+    sync::broadcast,
+};
+
+use crate::watcher::NotifyEventReceiver;
+
+pub(crate) async fn notify_handler(
+    root_path: PathBuf,
+    rx: NotifyEventReceiver,
+    tx: broadcast::Sender<Message>,
+) {
+    if let Err(e) = notify_handler_inner(root_path, rx, tx).await {
+        log::error!("error in filesystem event handler: {e:#}");
+    }
+}
+
+async fn notify_handler_inner(
+    root_path: PathBuf,
+    mut rx: NotifyEventReceiver,
+    tx: broadcast::Sender<Message>,
+) -> anyhow::Result<()> {
+    loop {
+        tokio::select! {
+            Some(res) = rx.recv() => {
+                match res {
+                    Ok(event) => {
+                        process_event(&root_path, &tx, &event)
+                            .with_context(|| format!("failed to process filesystem event: {event:?}"))?;
+                    },
+                    Err(e) => {
+                        anyhow::bail!(e);
+                    }
+                }
+            },
+        }
+    }
+}
+
+fn process_event(
+    root_path: &Path,
+    tx: &broadcast::Sender<Message>,
+    event: &Event,
+) -> anyhow::Result<()> {
+    log::debug!("received filesystem event: {event:?}");
+
+    let absolute_root = path::absolute(root_path)
+        .with_context(|| format!("failed to resolve root path: {root_path:?}"))?;
+
+    for path in &event.paths {
+        let absolute_path =
+            path::absolute(path).with_context(|| format!("failed to resolve path: {path:?}"))?;
+        let relative_to_root = absolute_path.strip_prefix(&absolute_root)?;
+
+        #[allow(clippy::single_match)]
+        match event.kind {
+            notify::EventKind::Modify(_) => {
+                // TODO: Only broadcast when file is written to and subsequently closed
+                let message = Message::FileUpdated {
+                    path: relative_to_root.to_owned(),
+                };
+
+                log::info!("broadcasting message: {message:?}");
+                tx.send(message)?;
+            }
+            _ => (),
+        };
+    }
+
+    Ok(())
+}
+
+pub(crate) struct ConnectionManager {
+    rx: broadcast::Receiver<Message>,
+}
+
+impl ConnectionManager {
+    pub(crate) fn new() -> (Self, broadcast::Sender<Message>) {
+        let (tx, rx) = broadcast::channel::<Message>(100);
+        (Self { rx }, tx)
+    }
+
+    pub(crate) async fn start(self, socket_path: PathBuf) {
+        if let Err(e) = self.start_inner(socket_path).await {
+            log::error!("error starting connection manager: {e:#}");
+        }
+    }
+
+    async fn start_inner(self, socket_path: PathBuf) -> anyhow::Result<()> {
+        if socket_path.try_exists()? {
+            remove_file(&socket_path).await?;
+        }
+
+        let listener = UnixListener::bind(&socket_path)
+            .with_context(|| format!("failed to listen to socket at {socket_path:?}"))?;
+
+        loop {
+            // TODO: Exchange version information to ensure client and server match
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    tokio::spawn(Self::connection_handler(self.rx.resubscribe(), stream));
+                }
+                Err(e) => {
+                    log::error!("failed to accept incoming connection: {e:#}");
+                }
+            }
+        }
+    }
+
+    async fn connection_handler(rx: broadcast::Receiver<Message>, stream: UnixStream) {
+        if let Err(e) = Self::connection_handler_inner(rx, stream).await {
+            log::error!("connection handler failed: {e:#}");
+        }
+    }
+
+    async fn connection_handler_inner(
+        mut rx: broadcast::Receiver<Message>,
+        mut stream: UnixStream,
+    ) -> anyhow::Result<()> {
+        log::info!("established connection with client");
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let json = format!("{}\n", serde_json::to_string_pretty(&event)?);
+                    let content_length = json.len();
+                    let payload = format!("{content_length}\n{json}");
+                    let write_result = stream.write_all(payload.as_bytes()).await;
+
+                    if let Err(e) = write_result {
+                        match e.kind() {
+                            ErrorKind::BrokenPipe => {
+                                log::info!("connection to client broken");
+                                return Ok(());
+                            }
+                            _ => {
+                                return Err(anyhow::anyhow!(e).context("failed writing to socket"));
+                            }
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    log::warn!("receiving too many filesystem events, skipping {skipped} event(s)");
+                }
+                Err(e) => anyhow::bail!("recv on filesystem event broadcast channel failed: {e:#}"),
+            }
+        }
+    }
+}
