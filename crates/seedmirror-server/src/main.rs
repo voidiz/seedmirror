@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let (connection_manager, connection_tx) = ConnectionManager::new();
 
     let mut set = JoinSet::new();
-    set.spawn(connection_manager.start(args.socket_path));
+    set.spawn(connection_manager.start(args.root_path.clone(), args.socket_path));
     set.spawn(informer::notify_handler(
         args.root_path,
         notify_rx,
