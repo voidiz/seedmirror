@@ -13,10 +13,9 @@ pub(crate) async fn create_watcher() -> anyhow::Result<(INotifyWatcher, NotifyEv
     let handle = Handle::current();
     let watcher = RecommendedWatcher::new(
         move |res| {
-            task::block_in_place(|| {
-                handle.block_on(async {
-                    tx.send(res).await.unwrap();
-                });
+            let tx = tx.clone();
+            handle.spawn(async move {
+                tx.send(res).await.unwrap();
             });
         },
         notify::Config::default(),

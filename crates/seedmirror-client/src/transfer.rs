@@ -150,7 +150,7 @@ async fn full_sync(args: Args, root_path: PathBuf) -> anyhow::Result<()> {
     } else {
         log::info!("found difference, syncing {fs_entries} filesystem entries...",);
         run_with_streaming_output(&rsync_cmd, |line| {
-            log::debug!(r#"syncing "{line}""#);
+            log::info!(r#"syncing "{line}""#);
         })
         .await?;
         log::info!("full sync done");
@@ -167,12 +167,13 @@ async fn sync_file(args: Args, remote_path: PathBuf) -> anyhow::Result<()> {
 }
 
 fn construct_rsync_cmd(args: &Args, remote_path: &Path) -> anyhow::Result<String> {
-    let ssh_cmd = format!(r#""{} {}""#, args.ssh_cmd, args.ssh_hostname);
-    let rsync_base_cmd = format!("{} -e {}", args.rsync_cmd, ssh_cmd);
+    let ssh_hostname = &args.ssh_hostname;
+    let rsync_base_cmd = &args.rsync_cmd;
     let destination_path = &args.destination_path;
     let abs_destination_path = path::absolute(destination_path)
         .with_context(|| format!("failed to resolve destination path: {destination_path:?}"))?;
-    let rsync_cmd = format!("{rsync_base_cmd} {remote_path:?} {abs_destination_path:?}");
+    let rsync_cmd =
+        format!("{rsync_base_cmd} {ssh_hostname}:{remote_path:?} {abs_destination_path:?}");
 
     Ok(rsync_cmd)
 }

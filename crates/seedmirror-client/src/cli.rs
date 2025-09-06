@@ -16,11 +16,12 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = false)]
     pub initial_sync: bool,
 
-    /// rsync command used to synchronize files. Will be combined with `ssh_cmd` to rsync over ssh.
+    /// rsync command used to synchronize files. Will be combined with `ssh_hostname` to rsync over ssh.
     #[arg(long, default_value_t = Self::default_rsync_cmd())]
     pub(crate) rsync_cmd: String,
 
-    /// Set the ssh command excluding the hostname (which is derived from `ssh_hostname`).
+    /// Set the ssh command for forwarding the unix domain socket from the server. Should not
+    /// include the hostname since it is derived from `ssh_hostname`.
     #[arg(long, default_value_t = Self::default_ssh_cmd())]
     pub(crate) ssh_cmd: String,
 
@@ -39,6 +40,6 @@ impl Args {
     }
 
     fn default_ssh_cmd() -> String {
-        "ssh -nT".to_string()
+        "ssh -nNT".to_string()
     }
 }
