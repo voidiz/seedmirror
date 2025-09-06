@@ -2,7 +2,6 @@ use notify::{Error, Event, INotifyWatcher, RecommendedWatcher, Watcher};
 use tokio::{
     runtime::Handle,
     sync::mpsc::{self, Receiver},
-    task::{self},
 };
 
 pub(crate) type NotifyEventReceiver = Receiver<Result<Event, Error>>;
