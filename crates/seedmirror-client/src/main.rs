@@ -1,6 +1,7 @@
-use tokio::signal;
+use clap::Parser;
+use tokio::{signal, task::JoinSet};
 
-use crate::workqueue::Workqueue;
+use crate::{transfer::init_remote_watcher, workqueue::Workqueue};
 
 mod cli;
 mod transfer;
@@ -8,24 +9,12 @@ mod workqueue;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::init();
+    let args = cli::Args::parse();
+
     let queue = Workqueue::new();
-
-    queue
-        .push("one".to_string(), || async {
-            println!("one sleep 5");
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            Ok(())
-        })
-        .await?;
-    println!("pushed first");
-
-    queue
-        .push("two".to_string(), || async {
-            println!("two done");
-            Ok(())
-        })
-        .await?;
-    println!("pushed second");
+    let mut set = JoinSet::new();
+    set.spawn(init_remote_watcher(&args, &queue)?);
 
     tokio::select! {
         res = signal::ctrl_c() => {
@@ -38,6 +27,9 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         },
+        res = set.join_next() => {
+            log::info!("task finished, quitting: {res:?}");
+        }
     }
 
     Ok(())
