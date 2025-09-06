@@ -147,7 +147,9 @@ async fn connection_handler_inner(
     loop {
         match rx.recv().await {
             Ok(msg) => {
-                write_message(&mut stream, msg).await?;
+                if write_message(&mut stream, msg).await? {
+                    return Ok(());
+                }
             }
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 log::warn!("receiving too many filesystem events, skipping {skipped} event(s)");
@@ -157,7 +159,8 @@ async fn connection_handler_inner(
     }
 }
 
-async fn write_message(stream: &mut UnixStream, msg: Message) -> anyhow::Result<()> {
+/// Returns true if the connection is broken and should be terminated.
+async fn write_message(stream: &mut UnixStream, msg: Message) -> anyhow::Result<bool> {
     let json = format!("{}\n", serde_json::to_string_pretty(&msg)?);
     let content_length = json.len();
     let payload = format!("{content_length}\n{json}");
@@ -166,8 +169,8 @@ async fn write_message(stream: &mut UnixStream, msg: Message) -> anyhow::Result<
     if let Err(e) = write_result {
         match e.kind() {
             ErrorKind::BrokenPipe => {
-                log::info!("connection to client broken");
-                return Ok(());
+                log::info!("connection to client broken, terminating it...");
+                return Ok(true);
             }
             _ => {
                 return Err(anyhow::anyhow!(e).context("failed writing to socket"));
@@ -175,5 +178,5 @@ async fn write_message(stream: &mut UnixStream, msg: Message) -> anyhow::Result<
         }
     }
 
-    Ok(())
+    Ok(false)
 }

@@ -4,6 +4,7 @@ use tokio::{signal, task::JoinSet};
 use crate::{transfer::init_remote_watcher, workqueue::Workqueue};
 
 mod cli;
+mod command;
 mod transfer;
 mod workqueue;
 
@@ -14,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let queue = Workqueue::new();
     let mut set = JoinSet::new();
-    set.spawn(init_remote_watcher(&args, &queue)?);
+    set.spawn(init_remote_watcher(&args, queue)?);
 
     tokio::select! {
         res = signal::ctrl_c() => {

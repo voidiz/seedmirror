@@ -19,14 +19,17 @@ async fn main() -> anyhow::Result<()> {
     let (connection_manager, connection_tx) = ConnectionManager::new();
 
     let mut set = JoinSet::new();
-    set.spawn(connection_manager.start(args.root_path.clone(), args.socket_path));
+    set.spawn(connection_manager.start(args.root_path.clone(), args.socket_path.clone()));
     set.spawn(informer::notify_handler(
         args.root_path,
         notify_rx,
         connection_tx,
     ));
 
-    log::info!("initialized. waiting for connections...");
+    log::info!(
+        "initialized. waiting for connections on socket {:?}...",
+        args.socket_path
+    );
 
     tokio::select! {
         res = signal::ctrl_c() => {

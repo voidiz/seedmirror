@@ -2,9 +2,8 @@ use std::{collections::HashSet, pin::Pin, sync::Arc};
 
 use tokio::sync::{Mutex, mpsc};
 
-type Task = (String, TaskFn);
-type TaskFn = Box<dyn FnOnce() -> BoxFutureResult + Send + Sync>;
-type BoxFutureResult = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+type Task = (String, BoxFutureResult);
+type BoxFutureResult = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync>>;
 
 pub(crate) struct Workqueue {
     sender: mpsc::UnboundedSender<Task>,
@@ -20,10 +19,9 @@ impl Workqueue {
         Self { sender: tx, active }
     }
 
-    pub(crate) async fn push<F, Fut>(&self, id: String, f: F) -> anyhow::Result<()>
+    pub(crate) async fn push<Fut>(&self, id: String, fut: Fut) -> anyhow::Result<()>
     where
-        F: FnOnce() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + Sync + 'static,
     {
         let mut active = self.active.lock().await;
         if active.contains(&id) {
@@ -33,7 +31,7 @@ impl Workqueue {
         }
 
         active.insert(id.clone());
-        self.sender.send((id, Box::new(move || Box::pin(f()))))?;
+        self.sender.send((id, Box::pin(fut)))?;
 
         Ok(())
     }
@@ -43,7 +41,7 @@ impl Workqueue {
         active_worker: Arc<Mutex<HashSet<String>>>,
     ) {
         while let Some((id, task)) = rx.recv().await {
-            if let Err(e) = task().await {
+            if let Err(e) = task.await {
                 log::error!("task `{id}` failed: {e:#}");
             }
 
