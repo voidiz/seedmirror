@@ -2,9 +2,10 @@ use clap::Parser;
 use notify::{RecursiveMode, Watcher};
 use tokio::{signal, task::JoinSet};
 
-use crate::informer::ConnectionManager;
+use crate::connection::ConnectionManager;
 
 mod cli;
+mod connection;
 mod informer;
 mod watcher;
 
