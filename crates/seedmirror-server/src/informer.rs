@@ -109,8 +109,15 @@ impl NotifyHandler {
 
                 // Spawn a separate task so it can't be canceled
                 tokio::spawn(async move {
-                    log::info!("broadcasting message: {msg:?}");
-                    msg_tx.send(msg.clone()).unwrap();
+                    let inner = || -> anyhow::Result<()> {
+                        log::info!("broadcasting message: {msg:?}");
+                        msg_tx.send(msg.clone())?;
+                        Ok(())
+                    };
+
+                    if let Err(e) = inner() {
+                        log::error!("failed to send message: {e:#}");
+                    }
                 });
             }),
         );

@@ -14,7 +14,14 @@ pub(crate) async fn create_watcher() -> anyhow::Result<(INotifyWatcher, NotifyEv
         move |res| {
             let tx = tx.clone();
             handle.spawn(async move {
-                tx.send(res).await.unwrap();
+                let fut = async {
+                    tx.send(res).await?;
+                    Ok::<(), anyhow::Error>(())
+                };
+
+                if let Err(e) = fut.await {
+                    log::error!("failed to send file watcher message: {e:#}");
+                }
             });
         },
         notify::Config::default(),
