@@ -1,8 +1,5 @@
 use clap::Parser;
-use notify::{RecursiveMode, Watcher};
 use tokio::{signal, task::JoinSet};
-
-use crate::connection::ConnectionManager;
 
 mod cli;
 mod connection;
@@ -14,18 +11,8 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = cli::Args::parse();
 
-    let (mut watcher, notify_rx) = watcher::create_watcher().await?;
-    watcher.watch(&args.root_path, RecursiveMode::Recursive)?;
-
-    let (connection_manager, connection_tx) = ConnectionManager::new();
-
     let mut set = JoinSet::new();
-    set.spawn(connection_manager.start(args.root_path.clone(), args.socket_path.clone()));
-    set.spawn(informer::notify_handler(
-        args.root_path,
-        notify_rx,
-        connection_tx,
-    ));
+    set.spawn(connection::connection_manager(args.socket_path.clone()));
 
     log::info!(
         "initialized. waiting for connections on socket {:?}...",

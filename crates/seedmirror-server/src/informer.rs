@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::{self, PathBuf},
+    path::{self},
     time::Duration,
 };
 
@@ -12,35 +12,28 @@ use tokio::{sync::broadcast, task::JoinHandle, time::sleep};
 use crate::watcher::NotifyEventReceiver;
 
 struct NotifyHandler {
-    /// Root path being watched.
-    root_path: PathBuf,
-
     /// Channel for incoming filesystem events.
     notify_rx: NotifyEventReceiver,
 
     /// Broadcast channel used to inform clients of updated files.
-    msg_tx: broadcast::Sender<Message>,
+    server_msg_tx: broadcast::Sender<Message>,
 
     /// Ongoing event handlers.
     events: HashMap<Message, JoinHandle<()>>,
 }
 
 impl NotifyHandler {
-    fn new(
-        root_path: PathBuf,
-        notify_rx: NotifyEventReceiver,
-        msg_tx: broadcast::Sender<Message>,
-    ) -> Self {
+    fn new(notify_rx: NotifyEventReceiver, server_msg_tx: broadcast::Sender<Message>) -> Self {
         Self {
-            root_path,
             notify_rx,
-            msg_tx,
+            server_msg_tx,
             events: HashMap::new(),
         }
     }
 
     async fn handle(mut self) -> anyhow::Result<()> {
-        let mut msg_rx = self.msg_tx.subscribe();
+        log::debug!("started notify handler");
+        let mut msg_rx = self.server_msg_tx.subscribe();
 
         loop {
             tokio::select! {
@@ -65,19 +58,15 @@ impl NotifyHandler {
     fn process_event(&mut self, event: &Event) -> anyhow::Result<()> {
         log::debug!("received filesystem event: {event:?}");
 
-        let absolute_root = path::absolute(&self.root_path)
-            .with_context(|| format!("failed to resolve root path: {:?}", self.root_path))?;
-
         for path in &event.paths {
             let absolute_path = path::absolute(path)
                 .with_context(|| format!("failed to resolve path: {path:?}"))?;
-            let relative_to_root = absolute_path.strip_prefix(&absolute_root)?;
 
             #[allow(clippy::single_match)]
             match event.kind {
                 notify::EventKind::Modify(_) => {
                     let msg = Message::FileUpdated {
-                        path: relative_to_root.to_owned(),
+                        path: absolute_path,
                     };
                     self.queue_message(msg);
                 }
@@ -93,8 +82,10 @@ impl NotifyHandler {
             handle.abort();
         }
 
-        let msg_tx = self.msg_tx.clone();
+        let msg_tx = self.server_msg_tx.clone();
         self.events.insert(
+            // FIXME: While we might not send any of the expensive messages here (with Vecs etc.),
+            // this is potentially expensive and should be replaced with something easier to hash.
             msg.clone(),
             tokio::spawn(async move {
                 sleep(Duration::from_secs(10)).await;
@@ -117,11 +108,10 @@ impl NotifyHandler {
 }
 
 pub(crate) async fn notify_handler(
-    root_path: PathBuf,
     rx: NotifyEventReceiver,
-    tx: broadcast::Sender<Message>,
+    server_msg_tx: broadcast::Sender<Message>,
 ) {
-    let state = NotifyHandler::new(root_path, rx, tx);
+    let state = NotifyHandler::new(rx, server_msg_tx);
     if let Err(e) = state.handle().await {
         log::error!("error in filesystem event handler: {e:#}");
     }

@@ -3,16 +3,35 @@
 ## requirements
 
 - openssh 6.7+ (for unix domain socket forwarding support)
-- rsync
+- rsync 3.2.3+ (for --mkpath flag)
 
-## running (examples)
+## running (example)
 
-To synchronize all files in `media/` on the server to `/mnt/storage/media/` on the client:
+To synchronize all files in
+
+- `/home/server/media/music/` on the server to `/mnt/storage/music/` on the client
+- `/home/server/media/videos/` on the server to `/mnt/storage/videos/` on the client
 
 ```bash
 # On the server
-seedmirror_server --root-path media/
+seedmirror_server
 
 # On the client
-seedmirror_client --ssh-hostname myserver --destination-path /mnt/storage/media/
+seedmirror_client --ssh-hostname myserver \
+    -p /home/server/media/music:/mnt/storage/music/ \
+    -p /home/server/media/videos:/mnt/storage/videos/
 ```
+
+## caveats
+
+- When creating path mappings, no local destination path should be within another local destination path. Violating this might cause unexpected behavior since the destination path is determined by comparing the incoming file with the remote source path of each path mapping and choosing the one with the longest matching prefix.
+
+  For example, the following is discouraged:
+
+  - `/remote/media/:/local/media/`
+  - `/remote/media/pictures/:/local/media/pictures/`
+
+  But the following is okay:
+
+  - `/remote/media/videos/:/local/media/videos/`
+  - `/remote/media/pictures/:/local/media/pictures/`

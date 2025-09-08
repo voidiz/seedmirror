@@ -1,6 +1,6 @@
 use std::{
     fs::remove_file,
-    path::{self, Path, PathBuf},
+    path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
     time::Duration,
@@ -8,12 +8,7 @@ use std::{
 
 use anyhow::Context;
 use seedmirror_core::message::Message;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-    net::UnixStream,
-    process::Command,
-    time::sleep,
-};
+use tokio::{io::BufReader, net::UnixStream, process::Command, time::sleep};
 
 use crate::{
     cli::Args,
@@ -58,43 +53,28 @@ struct RemoteWatcher {
 
     /// Queue for sync tasks.
     workqueue: Workqueue,
-
-    /// Remote root path to sync from.
-    root_path: Option<PathBuf>,
 }
 
 impl RemoteWatcher {
     pub(crate) fn new(args: Args, workqueue: Workqueue) -> Self {
-        Self {
-            args,
-            workqueue,
-            root_path: None,
-        }
+        Self { args, workqueue }
     }
 
     async fn handle_message(&mut self, msg: Message) -> anyhow::Result<()> {
         match msg {
-            Message::Connected { root_path } => {
-                log::info!("receiving updates from remote directory: {root_path:?} ",);
-                self.root_path = Some(root_path.clone());
+            Message::Connected => {
+                log::debug!("received `Connected` answer from server ",);
                 self.workqueue
-                    .push(
-                        "__full_sync".to_string(),
-                        full_sync(self.args.clone(), root_path),
-                    )
+                    .push("__full_sync".to_string(), full_sync(self.args.clone()))
                     .await?;
             }
             Message::FileUpdated { path } => {
                 let id = path.to_string_lossy().into_owned();
-                let mut remote_path = self.root_path.clone().ok_or(anyhow::anyhow!(
-                    "expected root_path to be set. did we receive a `Connected` message?"
-                ))?;
-                remote_path.push(path);
-
                 self.workqueue
-                    .push(id, sync_file(self.args.clone(), remote_path))
+                    .push(id, sync_file(self.args.clone(), path))
                     .await?;
             }
+            _ => (),
         };
 
         Ok(())
@@ -107,24 +87,25 @@ async fn new_remote_watcher(args: Args, workqueue: Workqueue) -> anyhow::Result<
     wait_for_file(local_socket_path).await;
 
     log::info!("connecting to {local_socket_path:?}");
-    let stream = UnixStream::connect(&local_socket_path)
+    let mut stream = UnixStream::connect(&local_socket_path)
         .await
         .with_context(|| format!("failed to connect to socket at {local_socket_path:?}"))?;
     log::info!("connected to {local_socket_path:?}");
+
+    let req = Message::ConnectionRequest {
+        watched_paths: args
+            .path_mappings
+            .iter()
+            .map(|(remote, _local)| remote.clone())
+            .collect(),
+    };
+    req.write_to_stream(&mut stream).await?;
 
     let mut watcher = RemoteWatcher::new(args, workqueue);
     let mut reader = BufReader::new(stream);
 
     loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).await?;
-
-        let content_length: usize = line.trim().parse()?;
-        let mut msg_bytes = vec![0; content_length];
-        reader.read_exact(&mut msg_bytes).await?;
-
-        log::debug!("received message: {}", String::from_utf8_lossy(&msg_bytes));
-        let msg: Message = serde_json::from_slice(&msg_bytes)?;
+        let msg = Message::read_from_reader(&mut reader).await?;
         watcher.handle_message(msg).await?;
     }
 }
@@ -136,44 +117,65 @@ async fn wait_for_file(path: &Path) {
     }
 }
 
-async fn full_sync(args: Args, root_path: PathBuf) -> anyhow::Result<()> {
+async fn full_sync(args: Args) -> anyhow::Result<()> {
     log::info!("performing full sync...");
-    let rsync_cmd = construct_rsync_cmd(&args, &root_path)?;
-    let dry_run_rsync_cmd = format!("{rsync_cmd} -n");
-    let fs_entries = run_with_output(&dry_run_rsync_cmd)
-        .await?
-        .matches("\n")
-        .count();
 
-    if fs_entries == 0 {
-        log::info!("no new files, full sync done");
-    } else {
-        log::info!("found difference, syncing {fs_entries} filesystem entries...",);
-        run_with_streaming_output(&rsync_cmd, |line| {
-            log::info!(r#"syncing "{line}""#);
-        })
-        .await?;
-        log::info!("full sync done");
+    for (remote_path, local_path) in &args.path_mappings {
+        let rsync_cmd = construct_rsync_cmd(&args, remote_path, local_path);
+        let dry_run_rsync_cmd = format!("{rsync_cmd} -n");
+        let fs_entries = run_with_output(&dry_run_rsync_cmd)
+            .await?
+            .matches("\n")
+            .count();
+
+        if fs_entries == 0 {
+            log::info!("no difference between remote {remote_path:?} and local {local_path:?}");
+        } else {
+            log::info!(
+                "found difference between remote {remote_path:?} and local {local_path:?}, syncing {fs_entries} filesystem entries...",
+            );
+            run_with_streaming_output(&rsync_cmd, |line| {
+                let remote_file_path = remote_path.join(&line);
+                let local_file_path = local_path.join(&line);
+                log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
+            })
+            .await?;
+        }
     }
 
+    log::info!("full sync done");
     Ok(())
 }
 
-async fn sync_file(args: Args, remote_path: PathBuf) -> anyhow::Result<()> {
-    log::info!("syncing {remote_path:?}");
-    let rsync_cmd = construct_rsync_cmd(&args, &remote_path)?;
+async fn sync_file(args: Args, remote_file_path: PathBuf) -> anyhow::Result<()> {
+    let (remote_path, local_path) = best_prefix_match(&remote_file_path, &args.path_mappings).ok_or(anyhow::anyhow!(
+        "found no watched remote path that matches the incoming remote file: {remote_file_path:?}"
+    ))?;
+
+    let relative_path = remote_file_path.strip_prefix(remote_path)?;
+    let local_file_path = local_path.join(relative_path);
+    let rsync_cmd = construct_rsync_cmd(&args, &remote_file_path, &local_file_path);
+
+    log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
     let _ = run_with_output(&rsync_cmd).await?;
+
     Ok(())
 }
 
-fn construct_rsync_cmd(args: &Args, remote_path: &Path) -> anyhow::Result<String> {
+fn construct_rsync_cmd(args: &Args, remote_path: &Path, local_path: &Path) -> String {
     let ssh_hostname = &args.ssh_hostname;
     let rsync_base_cmd = &args.rsync_cmd;
-    let destination_path = &args.destination_path;
-    let abs_destination_path = path::absolute(destination_path)
-        .with_context(|| format!("failed to resolve destination path: {destination_path:?}"))?;
-    let rsync_cmd =
-        format!("{rsync_base_cmd} {ssh_hostname}:{remote_path:?} {abs_destination_path:?}");
+    format!("{rsync_base_cmd} {ssh_hostname}:{remote_path:?} {local_path:?}")
+}
 
-    Ok(rsync_cmd)
+/// Returns the mapping that best matches `remote_file_path` based on the remote path with the
+/// longest prefix (amount of shared parent directories).
+fn best_prefix_match<'a>(
+    remote_file_path: &'a Path,
+    mappings: &'a [(PathBuf, PathBuf)],
+) -> Option<&'a (PathBuf, PathBuf)> {
+    mappings
+        .iter()
+        .filter(|(remote, _local)| remote_file_path.starts_with(remote))
+        .max_by_key(|(remote, _local)| remote.components().count())
 }

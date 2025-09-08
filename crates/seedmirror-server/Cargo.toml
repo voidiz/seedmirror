@@ -13,3 +13,4 @@ notify = { version = "8.2.0", features = ["serde"] }
 seedmirror-core = { path = "../seedmirror-core" }
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util = "0.7.16"

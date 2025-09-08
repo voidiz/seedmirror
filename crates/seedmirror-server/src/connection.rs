@@ -1,113 +1,138 @@
-use std::{
-    io::ErrorKind,
-    path::{self, PathBuf},
-};
+use std::path::PathBuf;
 
 use anyhow::Context;
+use notify::{RecursiveMode, Watcher};
 use seedmirror_core::message::Message;
 use tokio::{
     fs::remove_file,
-    io::AsyncWriteExt,
+    io::BufReader,
     net::{UnixListener, UnixStream},
     sync::broadcast,
+    task::JoinSet,
 };
 
-pub(crate) struct ConnectionManager {
-    rx: broadcast::Receiver<Message>,
+use crate::{informer, watcher};
+
+pub(crate) async fn connection_manager(socket_path: PathBuf) {
+    if let Err(e) = connection_manager_inner(socket_path).await {
+        log::error!("error starting connection manager: {e:#}");
+    }
 }
 
-impl ConnectionManager {
-    pub(crate) fn new() -> (Self, broadcast::Sender<Message>) {
-        let (tx, rx) = broadcast::channel::<Message>(100);
-        (Self { rx }, tx)
+async fn connection_manager_inner(socket_path: PathBuf) -> anyhow::Result<()> {
+    if socket_path.try_exists()? {
+        remove_file(&socket_path)
+            .await
+            .with_context(|| format!("failed to remove existing socket: {socket_path:?}"))?;
     }
 
-    pub(crate) async fn start(self, root_path: PathBuf, socket_path: PathBuf) {
-        if let Err(e) = self.start_inner(root_path, socket_path).await {
-            log::error!("error starting connection manager: {e:#}");
-        }
-    }
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("failed to listen to socket at {socket_path:?}"))?;
 
-    async fn start_inner(self, root_path: PathBuf, socket_path: PathBuf) -> anyhow::Result<()> {
-        if socket_path.try_exists()? {
-            remove_file(&socket_path)
-                .await
-                .with_context(|| format!("failed to remove existing socket: {socket_path:?}"))?;
-        }
-
-        let listener = UnixListener::bind(&socket_path)
-            .with_context(|| format!("failed to listen to socket at {socket_path:?}"))?;
-
-        let absolute_root_path = path::absolute(&root_path)
-            .with_context(|| format!("failed to resolve root path: {root_path:?}"))?;
-
-        loop {
-            // TODO: Exchange version information to ensure client and server match
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    tokio::spawn(connection_handler(
-                        absolute_root_path.clone(),
-                        self.rx.resubscribe(),
-                        stream,
-                    ));
-                }
-                Err(e) => {
-                    log::error!("failed to accept incoming connection: {e:#}");
-                }
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
+                tokio::spawn(connection_handler(stream));
+            }
+            Err(e) => {
+                log::error!("failed to accept incoming connection: {e:#}");
             }
         }
     }
 }
 
-async fn connection_handler(
-    root_path: PathBuf,
-    rx: broadcast::Receiver<Message>,
-    stream: UnixStream,
-) {
-    if let Err(e) = connection_handler_inner(root_path, rx, stream).await {
+async fn connection_handler(stream: UnixStream) {
+    if let Err(e) = connection_handler_inner(stream).await {
         log::error!("connection handler failed: {e:#}");
     }
 }
 
-async fn connection_handler_inner(
-    root_path: PathBuf,
-    mut rx: broadcast::Receiver<Message>,
-    mut stream: UnixStream,
-) -> anyhow::Result<()> {
-    log::info!("established connection with client");
-    write_message(&mut stream, Message::Connected { root_path }).await?;
+async fn connection_handler_inner(mut stream: UnixStream) -> anyhow::Result<()> {
+    log::info!("established socket connection with client");
+
+    let (server_msg_tx, mut server_msg_rx) = broadcast::channel::<Message>(100);
+
+    // Watcher will be shut down on drop
+    let (mut watcher, notify_rx) = watcher::create_watcher().await?;
+
+    let mut set = JoinSet::new();
+    set.spawn(informer::notify_handler(notify_rx, server_msg_tx));
+
     loop {
-        match rx.recv().await {
-            Ok(msg) => {
-                if write_message(&mut stream, msg).await? {
-                    return Ok(());
-                }
+        tokio::select! {
+            res = server_msg_rx.recv() => {
+                match handle_server_msg(res, &mut stream).await {
+                    Ok(true) => break,
+                    Ok(false) => (),
+                    Err(e) => anyhow::bail!(e),
+                };
             }
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                log::warn!("receiving too many filesystem events, skipping {skipped} event(s)");
+            Ok(_) = stream.readable() => {
+                match handle_client_msg(&mut watcher, &mut stream).await {
+                    Ok(true) => break,
+                    Ok(false) => (),
+                    Err(e) => anyhow::bail!(e),
+                };
             }
-            Err(e) => anyhow::bail!("recv on filesystem event broadcast channel failed: {e:#}"),
         }
     }
+
+    log::info!("connection broken, terminating it...");
+    Ok(())
 }
 
-/// Returns true if the connection is broken and should be terminated.
-async fn write_message(stream: &mut UnixStream, msg: Message) -> anyhow::Result<bool> {
-    let json = format!("{}\n", serde_json::to_string_pretty(&msg)?);
-    let content_length = json.len();
-    let payload = format!("{content_length}\n{json}");
-    let write_result = stream.write_all(payload.as_bytes()).await;
-
-    if let Err(e) = write_result {
-        match e.kind() {
-            ErrorKind::BrokenPipe => {
-                log::info!("connection to client broken, terminating it...");
+/// Returns true if the connection should be terminated.
+async fn handle_server_msg(
+    res: Result<Message, broadcast::error::RecvError>,
+    stream: &mut UnixStream,
+) -> anyhow::Result<bool> {
+    match res {
+        Ok(msg) => {
+            if msg.write_to_stream(stream).await? {
                 return Ok(true);
             }
-            _ => {
-                return Err(anyhow::anyhow!(e).context("failed writing to socket"));
-            }
         }
+        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+            log::warn!("receiving too many filesystem events, skipping {skipped} event(s)");
+        }
+        Err(e) => anyhow::bail!("recv on filesystem event broadcast channel failed: {e:#}"),
+    }
+
+    Ok(false)
+}
+
+/// Returns true if the connection should be terminated.
+async fn handle_client_msg(
+    watcher: &mut impl Watcher,
+    stream: &mut UnixStream,
+) -> anyhow::Result<bool> {
+    let (read_stream, mut write_stream) = tokio::io::split(&mut *stream);
+
+    let mut reader = BufReader::new(read_stream);
+    let msg = match Message::read_from_reader(&mut reader).await {
+        Ok(msg) => msg,
+        Err(e) => {
+            log::debug!(
+                "error when reading message from client (probably due to terminated connection): {e:#}"
+            );
+
+            return Ok(true);
+        }
+    };
+
+    #[allow(clippy::single_match)]
+    match msg {
+        // TODO: Exchange version information to ensure client and server match
+        Message::ConnectionRequest { watched_paths } => {
+            for path in watched_paths {
+                watcher.watch(&path, RecursiveMode::Recursive)?;
+            }
+
+            Message::Connected
+                .write_to_stream(&mut write_stream)
+                .await?;
+        }
+        _ => (),
     }
 
     Ok(false)
