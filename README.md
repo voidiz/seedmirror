@@ -22,6 +22,16 @@ seedmirror_client --ssh-hostname myserver \
     -p /home/server/media/videos:/mnt/storage/videos/
 ```
 
+## docker
+
+### seedmirror-client
+
+To build the image for `seedmirror-client` (from the root of the repo):
+
+```bash
+docker build -f docker/seedmirror-client/Dockerfile . --tag seedmirror-client:0.1.0
+```
+
 ## caveats
 
 - When creating path mappings, no local destination path should be within another local destination path. Violating this might cause unexpected behavior since the destination path is determined by comparing the incoming file with the remote source path of each path mapping and choosing the one with the longest matching prefix.
