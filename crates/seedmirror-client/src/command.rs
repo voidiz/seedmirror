@@ -18,7 +18,7 @@ pub(crate) async fn run_with_output(cmd: &str) -> anyhow::Result<String> {
                     "cmd `{cmd}` exited with non-zero code: {code}, stderr: `{stderr}`, stdout: `{stdout}`"
                 )
             } else {
-                log::debug!("cmd: `{cmd}`, stderr: `{stderr}, stdout: `{stdout}``");
+                log::debug!("cmd: `{cmd}`, stderr: `{stderr}, stdout: `{stdout}`");
             }
         }
         None => {

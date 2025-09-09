@@ -28,6 +28,11 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = false)]
     pub initial_sync: bool,
 
+    /// Preview all file changes through logs. No actual syncing of files (or full sync) will be
+    /// done.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
     /// rsync command used to synchronize files. Will be combined with `ssh-hostname` to rsync over ssh.
     #[arg(long, default_value_t = Self::default_rsync_cmd())]
     pub(crate) rsync_cmd: String,

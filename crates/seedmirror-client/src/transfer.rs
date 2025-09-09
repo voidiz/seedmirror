@@ -123,24 +123,30 @@ async fn full_sync(args: Args) -> anyhow::Result<()> {
     for (remote_path, local_path) in &args.path_mappings {
         let rsync_cmd = construct_rsync_cmd(&args, remote_path, local_path);
         let dry_run_rsync_cmd = format!("{rsync_cmd} -n");
-        let fs_entries = run_with_output(&dry_run_rsync_cmd)
-            .await?
-            .matches("\n")
-            .count();
+        let dry_run_output = run_with_output(&dry_run_rsync_cmd).await?;
+        let fs_entries = dry_run_output.lines().collect::<Vec<_>>();
+        let fs_entries_amount = fs_entries.len();
 
-        if fs_entries == 0 {
+        if fs_entries_amount == 0 {
             log::info!("no difference between remote {remote_path:?} and local {local_path:?}");
-        } else {
-            log::info!(
-                "found difference between remote {remote_path:?} and local {local_path:?}, syncing {fs_entries} filesystem entries...",
-            );
-            run_with_streaming_output(&rsync_cmd, |line| {
-                let remote_file_path = remote_path.join(&line);
-                let local_file_path = local_path.join(&line);
-                log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
-            })
-            .await?;
+            continue;
         }
+
+        let diff_msg = format!(
+            "found difference between remote {remote_path:?} and local {local_path:?}. syncing {fs_entries_amount} filesystem entries"
+        );
+        if args.dry_run {
+            log::info!("{diff_msg}: {fs_entries:?}");
+            continue;
+        }
+
+        log::info!("{diff_msg}");
+        run_with_streaming_output(&rsync_cmd, |line| {
+            let remote_file_path = remote_path.join(&line);
+            let local_file_path = local_path.join(&line);
+            log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
+        })
+        .await?;
     }
 
     log::info!("full sync done");
@@ -157,7 +163,9 @@ async fn sync_file(args: Args, remote_file_path: PathBuf) -> anyhow::Result<()> 
     let rsync_cmd = construct_rsync_cmd(&args, &remote_file_path, &local_file_path);
 
     log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
-    let _ = run_with_output(&rsync_cmd).await?;
+    if !args.dry_run {
+        let _ = run_with_output(&rsync_cmd).await?;
+    }
 
     Ok(())
 }
