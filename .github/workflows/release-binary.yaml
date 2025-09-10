@@ -1,4 +1,4 @@
-name: Release
+name: Release Binaries
 
 on:
   push:
@@ -35,3 +35,4 @@ jobs:
         with:
           files: |
             seedmirror-client-${{ github.ref_name }}-x86_64-linux-musl
+            seedmirror-server-${{ github.ref_name }}-x86_64-linux-musl

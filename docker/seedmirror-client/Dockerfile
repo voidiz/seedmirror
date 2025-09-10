@@ -7,8 +7,8 @@ FROM rust:${RUST_VERSION}-slim-trixie AS build
 ARG APP_NAME
 WORKDIR /app
 
-RUN --mount=type=bind,source=.,target=. \
-    --mount=type=cache,target=/app/target/ \
+COPY . .
+RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     <<EOF
 set -e
