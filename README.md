@@ -1,13 +1,15 @@
 # seedmirror
 
-## requirements
+seedmirror is a utility to monitor remote filesystem changes and automatically synchronize them to a local directory using rsync over ssh.
 
-- openssh 6.7+ (for unix domain socket forwarding support)
-- rsync 3.2.3+ (for --mkpath flag)
+## running (binary)
 
-## running (example)
+- openssh 6.7+ (for unix domain socket forwarding support, client and server)
+- rsync 3.2.3+ (for --mkpath flag, client only)
 
-To synchronize all files in
+Download the latest release [here](https://github.com/voidiz/seedmirror/releases) or [build](BUILDING.md) the binaries yourself.
+
+Example: To synchronize all files in
 
 - `/home/server/media/music/` on the server to `/mnt/storage/music/` on the client
 - `/home/server/media/videos/` on the server to `/mnt/storage/videos/` on the client
@@ -22,19 +24,9 @@ seedmirror-client --ssh-hostname myserver \
     -p /home/server/media/videos/:/mnt/storage/videos/
 ```
 
-### logging
+## running seedmirror-client (docker)
 
-The info log level is set by default for both the server and the client. It can be modified by changing the `RUST_LOG` environment variable as described [here](https://docs.rs/env_logger/latest/env_logger/#enabling-logging).
-
-## docker
-
-### seedmirror-client
-
-To build the image for `seedmirror-client` (from the root of the repo):
-
-```bash
-docker build -f docker/seedmirror-client/Dockerfile . --tag seedmirror-client:0.1.0
-```
+Pull the latest image from [here](https://github.com/voidiz/seedmirror/pkgs/container/seedmirror-client) or build it as described [here](BUILDING.md).
 
 To run the same (non-Docker) example described above:
 
@@ -45,13 +37,23 @@ docker run \
   -e PGID=$(id -g) \
   -v "$HOME/.ssh:/config/.ssh" \
   -v "/mnt/storage:/storage" \
-  seedmirror-client:0.1.0 \
+  ghcr.io/voidiz/seedmirror-client \
   --ssh-hostname myserver \
   -p /home/server/media/music/:/storage/music/ \
   -p /home/server/media/videos/:/storage/videos/
 ```
 
 Note that your ssh directory must be mounted at `/config/.ssh`. Furthermore, the values set for `$PUID` and `$PGID` should match the user ID and group ID of all mounted directories, respectively.
+
+## configuration
+
+### flags
+
+See `seedmirror-client --help` or `seedmirror-server --help`.
+
+### logging
+
+The info log level is set by default for both the server and the client. It can be modified by changing the `RUST_LOG` environment variable as described [here](https://docs.rs/env_logger/latest/env_logger/#enabling-logging).
 
 ## caveats
 
