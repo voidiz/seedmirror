@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-linux-musl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout commit
+        uses: actions/checkout@v5
+
+      - name: Install toolchain and setup caching
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+          target: x86_64-unknown-linux-musl
+
+      - name: Build binary
+        run: |
+          cargo check
+          cargo build --release --target x86_64-unknown-linux-musl
+          mv target/x86_64-unknown-linux-musl/release/seedmirror-client \
+            seedmirror-client-${{ github.ref_name }}-x86_64-linux-musl
+          mv target/x86_64-unknown-linux-musl/release/seedmirror-server \
+            seedmirror-server-${{ github.ref_name }}-x86_64-linux-musl
+
+      - name: Add files to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            seedmirror-client-${{ github.ref_name }}-x86_64-linux-musl
