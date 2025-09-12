@@ -18,5 +18,8 @@ if [ ! -e "/config/.ssh" ]; then
     exit 1
 fi
 
-ln -s /config/.ssh "/home/$USERNAME/.ssh"
+if [ ! -e "/home/$USERNAME/.ssh" ]; then
+    ln -s /config/.ssh "/home/$USERNAME/.ssh"
+fi
+
 su "$USERNAME" -c "exec seedmirror-client $*"
