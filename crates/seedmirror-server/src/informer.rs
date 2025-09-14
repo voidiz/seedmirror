@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::{self},
+    path::{self, Path, PathBuf},
     time::Duration,
 };
 
@@ -18,8 +18,8 @@ struct NotifyHandler {
     /// Broadcast channel used to inform clients of updated files.
     server_msg_tx: broadcast::Sender<Message>,
 
-    /// Ongoing event handlers.
-    events: HashMap<Message, JoinHandle<()>>,
+    /// Ongoing event handlers for file updates.
+    event_handlers: HashMap<PathBuf, JoinHandle<()>>,
 }
 
 impl NotifyHandler {
@@ -27,7 +27,7 @@ impl NotifyHandler {
         Self {
             notify_rx,
             server_msg_tx,
-            events: HashMap::new(),
+            event_handlers: HashMap::new(),
         }
     }
 
@@ -49,7 +49,10 @@ impl NotifyHandler {
                     }
                 },
                 Ok(msg) = msg_rx.recv() => {
-                    self.events.remove(&msg);
+                    // Clean up the event handler when the message has been sent
+                    if let Message::FileUpdated { path } = msg {
+                        self.event_handlers.remove(&path);
+                    }
                 }
             }
         }
@@ -64,11 +67,14 @@ impl NotifyHandler {
 
             #[allow(clippy::single_match)]
             match event.kind {
-                notify::EventKind::Modify(_) => {
+                notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
                     let msg = Message::FileUpdated {
-                        path: absolute_path,
+                        path: absolute_path.clone(),
                     };
-                    self.queue_message(msg);
+                    self.queue_notify_message(&absolute_path, msg);
+                }
+                notify::EventKind::Remove(_) => {
+                    self.abort_event_handler(&absolute_path);
                 }
                 _ => (),
             };
@@ -77,20 +83,17 @@ impl NotifyHandler {
         Ok(())
     }
 
-    fn queue_message(&mut self, msg: Message) {
-        if let Some(handle) = self.events.remove(&msg) {
-            handle.abort();
-        }
+    fn queue_notify_message(&mut self, path: &Path, msg: Message) {
+        self.abort_event_handler(path);
 
         let msg_tx = self.server_msg_tx.clone();
-        self.events.insert(
-            // FIXME: While we might not send any of the expensive messages here (with Vecs etc.),
-            // this is potentially expensive and should be replaced with something easier to hash.
-            msg.clone(),
+        self.event_handlers.insert(
+            path.to_path_buf(),
             tokio::spawn(async move {
                 sleep(Duration::from_secs(10)).await;
 
-                // Spawn a separate task so it can't be canceled
+                // Spawn a separate task so it can't be canceled. Currently there aren't any yield
+                // points, so it isn't strictly necessary right now.
                 tokio::spawn(async move {
                     let inner = || -> anyhow::Result<()> {
                         log::info!("broadcasting message: {msg:?}");
@@ -104,6 +107,12 @@ impl NotifyHandler {
                 });
             }),
         );
+    }
+
+    fn abort_event_handler(&mut self, path: &Path) {
+        if let Some(handle) = self.event_handlers.remove(path) {
+            handle.abort();
+        }
     }
 }
 
