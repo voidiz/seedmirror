@@ -68,9 +68,18 @@ impl NotifyHandler {
             #[allow(clippy::single_match)]
             match event.kind {
                 notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
-                    let msg = Message::FileUpdated {
-                        path: absolute_path.clone(),
-                    };
+                    let mut path = absolute_path.clone();
+
+                    // Push an empty component to the path to add a trailing slash. This is
+                    // important for rsync to treat it as a directory so that
+                    // `rsync <src dir> <dst dir>`
+                    // synchronizes the state of `<src dir>` with `<dst dir>` instead of placing
+                    // `<src dir>` inside `<dst dir>`.
+                    if path.is_dir() {
+                        path.push("");
+                    }
+
+                    let msg = Message::FileUpdated { path };
                     self.queue_notify_message(&absolute_path, msg);
                 }
                 notify::EventKind::Remove(_) => {
