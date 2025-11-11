@@ -4,7 +4,7 @@
 
 ### requirements
 
-- rust 1.89.0+ (stable)
+- cargo
 
 ### building
 
