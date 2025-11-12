@@ -1,8 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/seedmirror-client", "crates/seedmirror-core",
-    "crates/seedmirror-server"
+    "crates/seedmirror-client",
+    "crates/seedmirror-core",
+    "crates/seedmirror-server",
+    "crates/seedmirror-test",
 ]
 default-members = [
     "crates/seedmirror-client",

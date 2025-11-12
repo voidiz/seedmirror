@@ -575,6 +575,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "seedmirror-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
