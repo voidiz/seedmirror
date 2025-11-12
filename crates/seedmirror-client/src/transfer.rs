@@ -64,9 +64,11 @@ impl RemoteWatcher {
         match msg {
             Message::Connected => {
                 log::debug!("received `Connected` answer from server ",);
-                self.workqueue
-                    .push("__full_sync".to_string(), full_sync(self.args.clone()))
-                    .await?;
+                if self.args.initial_sync {
+                    self.workqueue
+                        .push("__full_sync".to_string(), full_sync(self.args.clone()))
+                        .await?;
+                }
             }
             Message::FileUpdated { path } => {
                 let id = path.to_string_lossy().into_owned();

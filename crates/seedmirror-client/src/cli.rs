@@ -25,7 +25,7 @@ pub(crate) struct Args {
     pub path_mappings: Vec<(PathBuf, PathBuf)>,
 
     /// Perform full sync of remote directory upon connecting.
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     pub initial_sync: bool,
 
     /// Preview all file changes through logs. No actual syncing of files (or full sync) will be
