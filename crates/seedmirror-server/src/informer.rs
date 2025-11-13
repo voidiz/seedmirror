@@ -101,7 +101,7 @@ impl NotifyHandler {
     fn queue_notify_message(&mut self, path: &Path, msg: Message) {
         self.abort_event_handler(path);
 
-        let sync_delay = self.args.sync_delay.clone();
+        let sync_delay = self.args.sync_delay;
         let msg_tx = self.server_msg_tx.clone();
         self.event_handlers.insert(
             path.to_path_buf(),
