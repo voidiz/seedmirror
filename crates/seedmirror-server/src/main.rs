@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
 
     let mut set = JoinSet::new();
-    set.spawn(connection::connection_manager(args.socket_path.clone()));
+    set.spawn(connection::connection_manager(args.clone()));
 
     log::info!(
         "initialized. waiting for connections on socket {:?}...",

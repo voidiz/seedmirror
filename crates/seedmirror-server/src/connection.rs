@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Context;
 use notify::{RecursiveMode, Watcher};
 use seedmirror_core::message::Message;
@@ -11,28 +9,30 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::{informer, watcher};
+use crate::{cli::Args, informer, watcher};
 
-pub(crate) async fn connection_manager(socket_path: PathBuf) {
-    if let Err(e) = connection_manager_inner(socket_path).await {
+pub(crate) async fn connection_manager(args: Args) {
+    if let Err(e) = connection_manager_inner(args).await {
         log::error!("error starting connection manager: {e:#}");
     }
 }
 
-async fn connection_manager_inner(socket_path: PathBuf) -> anyhow::Result<()> {
+async fn connection_manager_inner(args: Args) -> anyhow::Result<()> {
+    let socket_path = &args.socket_path;
+
     if socket_path.try_exists()? {
         remove_file(&socket_path)
             .await
             .with_context(|| format!("failed to remove existing socket: {socket_path:?}"))?;
     }
 
-    let listener = UnixListener::bind(&socket_path)
+    let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("failed to listen to socket at {socket_path:?}"))?;
 
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                tokio::spawn(connection_handler(stream));
+                tokio::spawn(connection_handler(args.clone(), stream));
             }
             Err(e) => {
                 log::error!("failed to accept incoming connection: {e:#}");
@@ -41,13 +41,13 @@ async fn connection_manager_inner(socket_path: PathBuf) -> anyhow::Result<()> {
     }
 }
 
-async fn connection_handler(stream: UnixStream) {
-    if let Err(e) = connection_handler_inner(stream).await {
+async fn connection_handler(args: Args, stream: UnixStream) {
+    if let Err(e) = connection_handler_inner(args, stream).await {
         log::error!("connection handler failed: {e:#}");
     }
 }
 
-async fn connection_handler_inner(mut stream: UnixStream) -> anyhow::Result<()> {
+async fn connection_handler_inner(args: Args, mut stream: UnixStream) -> anyhow::Result<()> {
     log::info!("established socket connection with client");
 
     let (server_msg_tx, mut server_msg_rx) = broadcast::channel::<Message>(100);
@@ -56,7 +56,7 @@ async fn connection_handler_inner(mut stream: UnixStream) -> anyhow::Result<()> 
     let (mut watcher, notify_rx) = watcher::create_watcher().await?;
 
     let mut set = JoinSet::new();
-    set.spawn(informer::notify_handler(notify_rx, server_msg_tx));
+    set.spawn(informer::notify_handler(args, notify_rx, server_msg_tx));
 
     loop {
         tokio::select! {

@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::Context;
-use seedmirror_test::{assert_dst_contains_src, copy_recursive};
+use seedmirror_test::{
+    path::{assert_dst_contains_src, copy_recursive},
+    process::ProcessGuard,
+};
 
 const SHARED_TEST_DIR: &str = "seedmirror-test";
 
@@ -28,26 +31,30 @@ fn test_full_sync() -> anyhow::Result<()> {
         .arg("build")
         .status()?;
 
-    let _server = Command::new("target/debug/seedmirror-server")
-        .current_dir(&test_dir.workspace_dir)
-        .arg("--socket-path")
-        .arg(&socket_path)
-        .spawn()?;
+    let _server = ProcessGuard::spawn(
+        Command::new("target/debug/seedmirror-server")
+            .current_dir(&test_dir.workspace_dir)
+            .arg("--socket-path")
+            .arg(&socket_path)
+            .arg("--sync-delay")
+            .arg("100"),
+    )?;
 
     // This will trigger a full sync
-    let _client = Command::new("target/debug/seedmirror-client")
-        .current_dir(&test_dir.workspace_dir)
-        .arg("--socket-path")
-        .arg(&socket_path)
-        .arg("--ssh-hostname")
-        .arg("localhost")
-        .arg("-p")
-        .arg(format!(
-            "{}:{}",
-            src.to_string_lossy(),
-            dst.to_string_lossy()
-        ))
-        .spawn()?;
+    let _client = ProcessGuard::spawn(
+        Command::new("target/debug/seedmirror-client")
+            .current_dir(&test_dir.workspace_dir)
+            .arg("--socket-path")
+            .arg(&socket_path)
+            .arg("--ssh-hostname")
+            .arg("localhost")
+            .arg("-p")
+            .arg(format!(
+                "{}:{}",
+                src.to_string_lossy(),
+                dst.to_string_lossy()
+            )),
+    )?;
 
     // Wait a second for the full sync to finish
     thread::sleep(Duration::new(1, 0));
@@ -55,8 +62,8 @@ fn test_full_sync() -> anyhow::Result<()> {
     // This will trigger sync for a single file
     fs::write(src.join("new_file.txt"), "")?;
 
-    // The server waits 10 seconds before notifying the client of any changes
-    thread::sleep(Duration::new(11, 0));
+    // The sync delay is set to 100ms, so a short sleep is fine
+    thread::sleep(Duration::new(1, 0));
     assert_dst_contains_src(&expected_dst, &dst)?;
 
     Ok(())
@@ -70,7 +77,7 @@ struct TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         if self.path.exists() {
-            // let _ = fs::remove_dir_all(&self.path);
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }

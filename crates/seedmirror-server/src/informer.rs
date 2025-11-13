@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     path::{self, Path, PathBuf},
-    time::Duration,
 };
 
 use anyhow::Context;
@@ -9,9 +8,11 @@ use notify::Event;
 use seedmirror_core::message::Message;
 use tokio::{sync::broadcast, task::JoinHandle, time::sleep};
 
-use crate::watcher::NotifyEventReceiver;
+use crate::{cli::Args, watcher::NotifyEventReceiver};
 
 struct NotifyHandler {
+    args: Args,
+
     /// Channel for incoming filesystem events.
     notify_rx: NotifyEventReceiver,
 
@@ -23,8 +24,13 @@ struct NotifyHandler {
 }
 
 impl NotifyHandler {
-    fn new(notify_rx: NotifyEventReceiver, server_msg_tx: broadcast::Sender<Message>) -> Self {
+    fn new(
+        args: Args,
+        notify_rx: NotifyEventReceiver,
+        server_msg_tx: broadcast::Sender<Message>,
+    ) -> Self {
         Self {
+            args,
             notify_rx,
             server_msg_tx,
             event_handlers: HashMap::new(),
@@ -95,11 +101,12 @@ impl NotifyHandler {
     fn queue_notify_message(&mut self, path: &Path, msg: Message) {
         self.abort_event_handler(path);
 
+        let sync_delay = self.args.sync_delay.clone();
         let msg_tx = self.server_msg_tx.clone();
         self.event_handlers.insert(
             path.to_path_buf(),
             tokio::spawn(async move {
-                sleep(Duration::from_secs(10)).await;
+                sleep(sync_delay).await;
 
                 // Spawn a separate task so it can't be canceled. Currently there aren't any yield
                 // points, so it isn't strictly necessary right now.
@@ -126,10 +133,11 @@ impl NotifyHandler {
 }
 
 pub(crate) async fn notify_handler(
+    args: Args,
     rx: NotifyEventReceiver,
     server_msg_tx: broadcast::Sender<Message>,
 ) {
-    let state = NotifyHandler::new(rx, server_msg_tx);
+    let state = NotifyHandler::new(args, rx, server_msg_tx);
     if let Err(e) = state.handle().await {
         log::error!("error in filesystem event handler: {e:#}");
     }
