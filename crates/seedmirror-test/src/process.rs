@@ -13,10 +13,9 @@ impl ProcessGuard {
 
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
-        // Not very cross-platform, but Child::kill leaves orphan processes
+        // Child::kill sends a SIGKILL which leaves orphan processes
         let _ = Command::new("kill")
-            // Negative PID for entire process group
-            .args(["-s", "INT", &format!("-{}", self.child.id())])
+            .args(["-s", "INT", &self.child.id().to_string()])
             .status();
     }
 }

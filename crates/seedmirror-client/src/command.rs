@@ -1,4 +1,4 @@
-use std::process::Stdio;
+use std::{ffi::OsStr, iter::once, process::Stdio};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
@@ -6,8 +6,20 @@ use tokio::{
 };
 
 /// Run the given command until completion and return the stdout.
-pub(crate) async fn run_with_output(cmd: &str) -> anyhow::Result<String> {
-    let child = Command::new("sh").arg("-c").arg(cmd).output().await?;
+pub(crate) async fn run_with_output<I, S>(cmd: &str, args: I) -> anyhow::Result<String>
+where
+    I: AsRef<[S]>,
+    S: AsRef<OsStr>,
+{
+    let cmdline = format_cmdline(cmd, args.as_ref());
+    log::debug!("running cmd: `{cmdline}`");
+
+    let child = Command::new(cmd)
+        .args(args.as_ref())
+        .kill_on_drop(true)
+        .output()
+        .await?;
+
     let stdout = String::from_utf8_lossy(&child.stdout);
     let stderr = String::from_utf8_lossy(&child.stderr);
 
@@ -15,14 +27,14 @@ pub(crate) async fn run_with_output(cmd: &str) -> anyhow::Result<String> {
         Some(code) => {
             if code > 0 {
                 anyhow::bail!(
-                    "cmd `{cmd}` exited with non-zero code: {code}, stderr: `{stderr}`, stdout: `{stdout}`"
+                    "cmd `{cmdline}` exited with non-zero code: {code}, stderr: `{stderr}`, stdout: `{stdout}`"
                 )
             } else {
-                log::debug!("cmd: `{cmd}`, stderr: `{stderr}, stdout: `{stdout}`");
+                log::debug!("cmd: `{cmdline}`, stderr: `{stderr}, stdout: `{stdout}`");
             }
         }
         None => {
-            anyhow::bail!("cmd `{cmd}` was terminated unexpectedly");
+            anyhow::bail!("cmd `{cmdline}` was terminated unexpectedly");
         }
     }
 
@@ -30,23 +42,31 @@ pub(crate) async fn run_with_output(cmd: &str) -> anyhow::Result<String> {
 }
 
 /// Run the given command until completion and apply `f` to each line of streaming stdout.
-pub(crate) async fn run_with_streaming_output<F>(cmd: &str, f: F) -> anyhow::Result<()>
+pub(crate) async fn run_with_streaming_output<I, S, F>(
+    cmd: &str,
+    args: I,
+    f: F,
+) -> anyhow::Result<()>
 where
+    I: AsRef<[S]>,
+    S: AsRef<OsStr>,
     F: Fn(String),
 {
-    log::debug!("streaming cmd: `{cmd}`");
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
+    let cmdline = format_cmdline(cmd, args.as_ref());
+    log::debug!("streaming cmd: `{cmdline}`");
+
+    let mut child = Command::new(cmd)
+        .args(args.as_ref())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
 
     let stdout = child.stdout.take().expect("stdout should not be taken");
     let mut lines = BufReader::new(stdout).lines();
 
     while let Some(line) = lines.next_line().await? {
-        log::debug!("streaming cmd: `{cmd}`, stdout line: `{line}`");
+        log::debug!("streaming cmd: `{cmdline}`, stdout line: `{line}`");
         f(line);
     }
 
@@ -60,16 +80,31 @@ where
         Some(code) => {
             if code > 0 {
                 anyhow::bail!(
-                    "streaming cmd `{cmd}` exited with non-zero code: {code}, stderr: `{stderr_str}`"
+                    "streaming cmd `{cmdline}` exited with non-zero code: {code}, stderr: `{stderr_str}`"
                 )
             } else {
-                log::debug!("streaming cmd: `{cmd}`, stderr: `{stderr_str}`");
+                log::debug!("streaming cmd: `{cmdline}`, stderr: `{stderr_str}`");
             }
         }
         None => {
-            anyhow::bail!("streaming cmd `{cmd}` was terminated unexpectedly");
+            anyhow::bail!("streaming cmd `{cmdline}` was terminated unexpectedly");
         }
     }
 
     Ok(())
+}
+
+fn format_cmdline<I, S>(cmd: &str, args: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let lossy_args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string_lossy().to_string());
+
+    once(cmd.to_string())
+        .chain(lossy_args)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
