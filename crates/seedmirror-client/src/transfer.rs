@@ -37,6 +37,10 @@ pub(crate) fn init_remote_watcher(args: &Args, workqueue: Workqueue) -> anyhow::
         .kill_on_drop(true)
         .arg(&args.ssh_hostname)
         .arg("-nNT")
+        .arg("-o")
+        .arg("ServerAliveInterval=60")
+        .arg("-o")
+        .arg("ServerAliveCountMax=3")
         .arg("-L")
         .arg(format!(
             "{}:{}",
