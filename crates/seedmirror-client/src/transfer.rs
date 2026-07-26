@@ -9,7 +9,7 @@ use std::{
 use anyhow::Context;
 use seedmirror_core::message::Message;
 use tokio::{
-    io::BufReader,
+    io::{AsyncBufReadExt, BufReader},
     net::UnixStream,
     process::{Child, Command},
     time::sleep,
@@ -33,7 +33,7 @@ pub(crate) fn init_remote_watcher(args: &Args, workqueue: Workqueue) -> anyhow::
         })?;
     }
 
-    let ssh_child = Command::new("ssh")
+    let mut ssh_child = Command::new("ssh")
         .kill_on_drop(true)
         .arg(&args.ssh_hostname)
         .arg("-nNT")
@@ -49,8 +49,19 @@ pub(crate) fn init_remote_watcher(args: &Args, workqueue: Workqueue) -> anyhow::
         ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| "failed to spawn ssh")?;
+
+    if let Some(stderr) = ssh_child.stderr.take() {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                log::error!("ssh stderr: {line}");
+            }
+        });
+    }
 
     let remote_watcher = new_remote_watcher(args.clone(), workqueue, ssh_child);
     Ok(Box::pin(remote_watcher))
@@ -95,13 +106,17 @@ impl RemoteWatcher {
 async fn new_remote_watcher(
     args: Args,
     workqueue: Workqueue,
-    // Only kept around so that the process is killed when the program stops and the value is
-    // dropped.
-    _ssh_child: Child,
+    mut ssh_child: Child,
 ) -> anyhow::Result<()> {
     let local_socket_path = &args.local_socket_path;
-    log::info!("waiting for {local_socket_path:?} to be created");
-    wait_for_file(local_socket_path).await;
+
+    tokio::select! {
+        _ = wait_for_file(local_socket_path) => {},
+        // File will never exist if the ssh process fails and exits.
+        status = ssh_child.wait() => {
+            anyhow::bail!("ssh exited: {:?}", status?)
+        }
+    }
 
     log::info!("connecting to {local_socket_path:?}");
     let mut stream = UnixStream::connect(&local_socket_path)
@@ -130,6 +145,7 @@ async fn new_remote_watcher(
 async fn wait_for_file(path: &Path) {
     // TODO: Use file watcher at some point
     while !path.exists() {
+        log::info!("waiting for {path:?} to be created");
         sleep(Duration::from_millis(100)).await;
     }
 }
