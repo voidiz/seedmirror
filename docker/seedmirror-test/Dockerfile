@@ -1,16 +1,20 @@
 FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     openssh-server \
-    rustc \
-    cargo \
     rsync \
     build-essential \
     git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 
 RUN mkdir -p /var/run/sshd
 

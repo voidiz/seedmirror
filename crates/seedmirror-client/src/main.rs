@@ -1,10 +1,14 @@
 use clap::Parser;
-use tokio::{signal::{self, unix::SignalKind}, task::JoinSet};
+use tokio::{
+    signal::{self, unix::SignalKind},
+    task::JoinSet,
+};
 
 use crate::{transfer::init_remote_watcher, workqueue::Workqueue};
 
 mod cli;
 mod command;
+mod status;
 mod transfer;
 mod workqueue;
 

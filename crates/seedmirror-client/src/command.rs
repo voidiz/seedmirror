@@ -31,21 +31,6 @@ where
     let stdout = String::from_utf8_lossy(&child.stdout);
     let stderr = String::from_utf8_lossy(&child.stderr);
 
-    match child.status.code() {
-        Some(code) => {
-            if code > 0 {
-                anyhow::bail!(
-                    "cmd `{cmdline}` exited with non-zero code: {code}, stderr: `{stderr}`, stdout: `{stdout}`"
-                )
-            } else {
-                log::debug!("cmd: `{cmdline}`, stderr: `{stderr}, stdout: `{stdout}`");
-            }
-        }
-        None => {
-            anyhow::bail!("cmd `{cmdline}` was terminated unexpectedly");
-        }
-    }
-
     if !child.status.success() {
         let code_str = match child.status.code() {
             Some(code) => format!("exit code {code}"),
@@ -66,12 +51,12 @@ where
 pub(crate) async fn run_with_streaming_output<I, S, F>(
     cmd: &str,
     args: I,
-    f: F,
+    mut f: F,
 ) -> anyhow::Result<()>
 where
     I: AsRef<[S]>,
     S: AsRef<OsStr>,
-    F: Fn(String),
+    F: FnMut(&str),
 {
     let cmdline = format_cmdline(cmd, args.as_ref());
     log::debug!("streaming cmd: `{cmdline}`");
@@ -100,10 +85,33 @@ where
         Ok::<String, std::io::Error>(stderr_str)
     });
 
-    let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await? {
-        log::debug!("streaming cmd: `{cmdline}`, stdout line: `{line}`");
-        f(line);
+    let mut stdout_reader = BufReader::new(stdout);
+
+    let mut buffer = Vec::new();
+    let mut byte_buf = [0u8; 1024];
+
+    while let Ok(bytes_read) = stdout_reader.read(&mut byte_buf).await {
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        for &byte in &byte_buf[..bytes_read] {
+            if byte == b'\r' || byte == b'\n' {
+                if !buffer.is_empty() {
+                    let chunk = String::from_utf8_lossy(&buffer);
+                    f(&chunk);
+                    buffer.clear();
+                }
+            } else {
+                buffer.push(byte);
+            }
+        }
+    }
+
+    // Flush any leftover trailing bytes
+    if !buffer.is_empty() {
+        let chunk = String::from_utf8_lossy(&buffer);
+        f(&chunk);
     }
 
     let status = child.wait().await?;

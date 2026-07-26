@@ -6,7 +6,7 @@ use clap::Parser;
 pub(crate) struct Args {
     /// Set the hostname to ssh to.
     #[arg(long)]
-    pub(crate) ssh_hostname: String,
+    pub ssh_hostname: String,
 
     /// Absolute paths to sync. Specify multiple times to sync multiple paths.
     ///
@@ -40,6 +40,11 @@ pub(crate) struct Args {
     /// Local path to forward unix domain socket to.
     #[arg(long, default_value_os_t = PathBuf::from("/tmp/forwarded-seedmirror-server.sock"))]
     pub local_socket_path: PathBuf,
+
+    /// Port to run GUI HTTP server on.
+    #[cfg(feature = "gui")]
+    #[arg(long, default_value_t = 8080)]
+    pub http_port: u16,
 }
 
 impl Args {

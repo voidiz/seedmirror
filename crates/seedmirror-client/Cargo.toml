@@ -5,9 +5,17 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+# HTTP server
+axum = { version = "0.8.9", optional = true }
 clap.workspace = true
 env_logger.workspace = true
 log.workspace = true
+# Embed frontend static files
+rust-embed = { version = "8.12.0", features = ["compression"], optional = true }
 seedmirror-core = { path = "../seedmirror-core" }
 serde_json.workspace = true
 tokio.workspace = true
+
+[features]
+default = ["gui"]
+gui = ["dep:axum", "dep:rust-embed"]

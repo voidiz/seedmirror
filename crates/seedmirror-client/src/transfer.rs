@@ -18,6 +18,7 @@ use tokio::{
 use crate::{
     cli::Args,
     command::{run_with_output, run_with_streaming_output},
+    status::StatusMessage,
     workqueue::Workqueue,
 };
 
@@ -176,11 +177,9 @@ async fn full_sync(args: Args) -> anyhow::Result<()> {
         log::info!("{diff_msg}");
 
         let (rsync_cmd, rsync_args) = construct_rsync_cmd(&args, remote_path, local_path, false);
-        run_with_streaming_output(rsync_cmd, rsync_args, |line| {
-            let line_trimmed = line.trim_matches('"');
-            let remote_file_path = remote_path.join(line_trimmed);
-            let local_file_path = local_path.join(line_trimmed);
-            log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
+
+        run_with_streaming_output(rsync_cmd, rsync_args, |chunk| {
+            handle_rsync_output_chunk(remote_path, local_path, chunk);
         })
         .await?;
     }
@@ -200,9 +199,14 @@ async fn sync_file(args: Args, remote_file_path: PathBuf) -> anyhow::Result<()> 
         construct_rsync_cmd(&args, &remote_file_path, &local_file_path, false);
 
     log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
-    if !args.dry_run {
-        let _ = run_with_output(rsync_cmd, rsync_args).await?;
+    if args.dry_run {
+        return Ok(());
     }
+
+    run_with_streaming_output(rsync_cmd, rsync_args, |chunk| {
+        handle_rsync_output_chunk(remote_path, local_path, chunk);
+    })
+    .await?;
 
     Ok(())
 }
@@ -216,9 +220,10 @@ fn construct_rsync_cmd<'a>(
     let ssh_hostname = &args.ssh_hostname;
     let mut args = vec![
         "-ahz".to_string(),
+        "--progress".to_string(),
         "--partial".to_string(),
         "--mkpath".to_string(), // automatically create destination path
-        r#"--out-format="%n""#.to_string(),
+        r#"--out-format=%n"#.to_string(),
         format!("{}:{}", ssh_hostname, remote_path.to_string_lossy()),
         local_path.to_string_lossy().to_string(),
     ];
@@ -228,6 +233,48 @@ fn construct_rsync_cmd<'a>(
     }
 
     ("rsync", args)
+}
+
+fn handle_rsync_output_chunk<'a>(remote_path: &'a Path, local_path: &'a Path, chunk: &str) {
+    let msg = parse_rsync_output_chunk(remote_path, local_path, chunk);
+    let Some(msg) = msg else {
+        return;
+    };
+
+    if let StatusMessage::SyncingPath {
+        remote_file_path,
+        local_file_path,
+    } = &msg
+    {
+        log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
+    }
+
+    // TODO: Send msg to channel
+}
+
+fn parse_rsync_output_chunk<'a>(
+    remote_path: &'a Path,
+    local_path: &'a Path,
+    chunk: &str,
+) -> Option<StatusMessage> {
+    let parts = chunk.split_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        // prevent parsing "receiving incremental file list" as SyncProgress
+        ["receiving", ..] => None,
+        // rsync sometimes puts stuff like (xfr#1, to-chk=4/7) at the end, hence the ..
+        [transferred, progress, transfer_speed, remaining, ..] => {
+            Some(StatusMessage::SyncProgress {
+                transferred: transferred.to_string(),
+                progress: progress.to_string(),
+                transfer_speed: transfer_speed.to_string(),
+                remaining: remaining.to_string(),
+            })
+        }
+        _ => Some(StatusMessage::SyncingPath {
+            remote_file_path: remote_path.join(chunk).to_string_lossy().to_string(),
+            local_file_path: local_path.join(chunk).to_string_lossy().to_string(),
+        }),
+    }
 }
 
 /// Returns the mapping that best matches `remote_file_path` based on the remote path with the
