@@ -19,5 +19,5 @@ docker run -it \
   --rm \
   --name "${CONTAINER_NAME}" \
   -v "$(pwd):/workspace" \
-  -p 2222:22 \
+  -p 8080:8080 \
   "${IMAGE_NAME}"

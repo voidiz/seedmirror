@@ -1,7 +1,7 @@
 use std::{ffi::OsStr, io::ErrorKind, iter::once, process::Stdio};
 
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    io::{AsyncReadExt, BufReader},
     process::Command,
 };
 

@@ -1,27 +1,42 @@
+use std::process::ExitCode;
+
 use clap::Parser;
 use tokio::{
     signal::{self, unix::SignalKind},
     task::JoinSet,
 };
 
-use crate::{transfer::init_remote_watcher, workqueue::Workqueue};
+use crate::{state::init_state_broker, transfer::init_remote_watcher, workqueue::Workqueue};
 
 mod cli;
 mod command;
+
+#[cfg(feature = "gui")]
+mod http;
+
+mod state;
 mod status;
+mod task;
 mod transfer;
 mod workqueue;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+async fn run() -> anyhow::Result<()> {
     let args = cli::Args::parse();
 
     let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
 
+    let (state_updater, state_tx, state_bcast) = init_state_broker();
+
     let queue = Workqueue::new();
     let mut set = JoinSet::new();
-    set.spawn(init_remote_watcher(&args, queue)?);
+    set.spawn(state_updater);
+
+    #[cfg(feature = "gui")]
+    if args.gui {
+        set.spawn(http::init_http_server(&args, state_tx.clone(), state_bcast).await?);
+    }
+
+    set.spawn(init_remote_watcher(&args, queue, state_tx)?);
 
     tokio::select! {
         _ = sigterm.recv() => {
@@ -43,4 +58,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    if let Err(e) = run().await {
+        log::error!("startup failure: {e:?}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
 }

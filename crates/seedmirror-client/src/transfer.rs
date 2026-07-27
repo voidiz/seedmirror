@@ -18,13 +18,17 @@ use tokio::{
 use crate::{
     cli::Args,
     command::{run_with_output, run_with_streaming_output},
-    status::StatusMessage,
+    state::{StateBrokerMessage, StateBrokerTx},
     workqueue::Workqueue,
 };
 
 type Task = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
 
-pub(crate) fn init_remote_watcher(args: &Args, workqueue: Workqueue) -> anyhow::Result<Task> {
+pub(crate) fn init_remote_watcher(
+    args: &Args,
+    workqueue: Workqueue,
+    state_tx: StateBrokerTx,
+) -> anyhow::Result<Task> {
     if args.local_socket_path.try_exists()? {
         remove_file(&args.local_socket_path).with_context(|| {
             format!(
@@ -64,7 +68,7 @@ pub(crate) fn init_remote_watcher(args: &Args, workqueue: Workqueue) -> anyhow::
         });
     }
 
-    let remote_watcher = new_remote_watcher(args.clone(), workqueue, ssh_child);
+    let remote_watcher = new_remote_watcher(args.clone(), workqueue, state_tx, ssh_child);
     Ok(Box::pin(remote_watcher))
 }
 
@@ -74,11 +78,18 @@ struct RemoteWatcher {
 
     /// Queue for sync tasks.
     workqueue: Workqueue,
+
+    /// Channel for sending state updates.
+    state_tx: StateBrokerTx,
 }
 
 impl RemoteWatcher {
-    pub(crate) fn new(args: Args, workqueue: Workqueue) -> Self {
-        Self { args, workqueue }
+    pub(crate) fn new(args: Args, workqueue: Workqueue, state_tx: StateBrokerTx) -> Self {
+        Self {
+            args,
+            workqueue,
+            state_tx,
+        }
     }
 
     async fn handle_message(&mut self, msg: Message) -> anyhow::Result<()> {
@@ -87,14 +98,20 @@ impl RemoteWatcher {
                 log::debug!("received `Connected` answer from server ",);
                 if self.args.initial_sync {
                     self.workqueue
-                        .push("__full_sync".to_string(), full_sync(self.args.clone()))
+                        .push(
+                            "__full_sync".to_string(),
+                            full_sync(self.args.clone(), self.state_tx.clone()),
+                        )
                         .await?;
                 }
             }
             Message::FileUpdated { path } => {
                 let id = path.to_string_lossy().into_owned();
                 self.workqueue
-                    .push(id, sync_file(self.args.clone(), path))
+                    .push(
+                        id,
+                        sync_file(self.args.clone(), path, self.state_tx.clone()),
+                    )
                     .await?;
             }
             _ => (),
@@ -107,6 +124,7 @@ impl RemoteWatcher {
 async fn new_remote_watcher(
     args: Args,
     workqueue: Workqueue,
+    state_tx: StateBrokerTx,
     mut ssh_child: Child,
 ) -> anyhow::Result<()> {
     let local_socket_path = &args.local_socket_path;
@@ -134,7 +152,7 @@ async fn new_remote_watcher(
     };
     req.write_to_stream(&mut stream).await?;
 
-    let mut watcher = RemoteWatcher::new(args, workqueue);
+    let mut watcher = RemoteWatcher::new(args, workqueue, state_tx);
     let mut reader = BufReader::new(stream);
 
     loop {
@@ -151,7 +169,7 @@ async fn wait_for_file(path: &Path) {
     }
 }
 
-async fn full_sync(args: Args) -> anyhow::Result<()> {
+async fn full_sync(args: Args, state_tx: StateBrokerTx) -> anyhow::Result<()> {
     log::info!("performing full sync...");
 
     for (remote_path, local_path) in &args.path_mappings {
@@ -179,7 +197,7 @@ async fn full_sync(args: Args) -> anyhow::Result<()> {
         let (rsync_cmd, rsync_args) = construct_rsync_cmd(&args, remote_path, local_path, false);
 
         run_with_streaming_output(rsync_cmd, rsync_args, |chunk| {
-            handle_rsync_output_chunk(remote_path, local_path, chunk);
+            handle_rsync_output_chunk(&state_tx, remote_path, local_path, chunk);
         })
         .await?;
     }
@@ -188,7 +206,11 @@ async fn full_sync(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn sync_file(args: Args, remote_file_path: PathBuf) -> anyhow::Result<()> {
+async fn sync_file(
+    args: Args,
+    remote_file_path: PathBuf,
+    state_tx: StateBrokerTx,
+) -> anyhow::Result<()> {
     let (remote_path, local_path) = best_prefix_match(&remote_file_path, &args.path_mappings).ok_or(anyhow::anyhow!(
         "found no watched remote path that matches the incoming remote file: {remote_file_path:?}"
     ))?;
@@ -198,13 +220,13 @@ async fn sync_file(args: Args, remote_file_path: PathBuf) -> anyhow::Result<()> 
     let (rsync_cmd, rsync_args) =
         construct_rsync_cmd(&args, &remote_file_path, &local_file_path, false);
 
-    log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
     if args.dry_run {
+        log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
         return Ok(());
     }
 
     run_with_streaming_output(rsync_cmd, rsync_args, |chunk| {
-        handle_rsync_output_chunk(remote_path, local_path, chunk);
+        handle_rsync_output_chunk(&state_tx, remote_path, local_path, chunk);
     })
     .await?;
 
@@ -235,13 +257,18 @@ fn construct_rsync_cmd<'a>(
     ("rsync", args)
 }
 
-fn handle_rsync_output_chunk<'a>(remote_path: &'a Path, local_path: &'a Path, chunk: &str) {
+fn handle_rsync_output_chunk<'a>(
+    state_tx: &StateBrokerTx,
+    remote_path: &'a Path,
+    local_path: &'a Path,
+    chunk: &str,
+) {
     let msg = parse_rsync_output_chunk(remote_path, local_path, chunk);
     let Some(msg) = msg else {
         return;
     };
 
-    if let StatusMessage::SyncingPath {
+    if let StateBrokerMessage::SetSyncingPath {
         remote_file_path,
         local_file_path,
     } = &msg
@@ -249,28 +276,30 @@ fn handle_rsync_output_chunk<'a>(remote_path: &'a Path, local_path: &'a Path, ch
         log::info!(r#"syncing remote {remote_file_path:?} to local {local_file_path:?}"#);
     }
 
-    // TODO: Send msg to channel
+    if let Err(e) = state_tx.try_send(msg) {
+        log::error!("failed to send rsync state update: {e:?}");
+    }
 }
 
 fn parse_rsync_output_chunk<'a>(
     remote_path: &'a Path,
     local_path: &'a Path,
     chunk: &str,
-) -> Option<StatusMessage> {
+) -> Option<StateBrokerMessage> {
     let parts = chunk.split_whitespace().collect::<Vec<_>>();
     match parts.as_slice() {
         // prevent parsing "receiving incremental file list" as SyncProgress
         ["receiving", ..] => None,
         // rsync sometimes puts stuff like (xfr#1, to-chk=4/7) at the end, hence the ..
         [transferred, progress, transfer_speed, remaining, ..] => {
-            Some(StatusMessage::SyncProgress {
+            Some(StateBrokerMessage::SetSyncProgress {
                 transferred: transferred.to_string(),
                 progress: progress.to_string(),
                 transfer_speed: transfer_speed.to_string(),
                 remaining: remaining.to_string(),
             })
         }
-        _ => Some(StatusMessage::SyncingPath {
+        _ => Some(StateBrokerMessage::SetSyncingPath {
             remote_file_path: remote_path.join(chunk).to_string_lossy().to_string(),
             local_file_path: local_path.join(chunk).to_string_lossy().to_string(),
         }),

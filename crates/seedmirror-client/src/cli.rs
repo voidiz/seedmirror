@@ -41,10 +41,15 @@ pub(crate) struct Args {
     #[arg(long, default_value_os_t = PathBuf::from("/tmp/forwarded-seedmirror-server.sock"))]
     pub local_socket_path: PathBuf,
 
-    /// Port to run GUI HTTP server on.
+    /// Whether the GUI HTTP server is enabled.
     #[cfg(feature = "gui")]
-    #[arg(long, default_value_t = 8080)]
-    pub http_port: u16,
+    #[arg(long, default_value_t = false)]
+    pub gui: bool,
+
+    /// Address to bind GUI HTTP server to.
+    #[cfg(feature = "gui")]
+    #[arg(long, default_value_t = "0.0.0.0:8080".to_string())]
+    pub http_addr: String,
 }
 
 impl Args {

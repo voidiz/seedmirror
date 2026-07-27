@@ -6,13 +6,16 @@ edition = "2024"
 [dependencies]
 anyhow.workspace = true
 # HTTP server
-axum = { version = "0.8.9", optional = true }
+axum = { version = "0.8.9", features = ["ws"], optional = true }
 clap.workspace = true
 env_logger.workspace = true
 log.workspace = true
+# Used to track most recent sync file updates
+lru = "0.18.1"
 # Embed frontend static files
 rust-embed = { version = "8.12.0", features = ["compression"], optional = true }
 seedmirror-core = { path = "../seedmirror-core" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
