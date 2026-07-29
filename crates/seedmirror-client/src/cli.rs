@@ -41,12 +41,16 @@ pub(crate) struct Args {
     #[arg(long, default_value_os_t = PathBuf::from("/tmp/forwarded-seedmirror-server.sock"))]
     pub local_socket_path: PathBuf,
 
+    /// Additional rsync flags. Specify multiple times for multiple flags.
+    #[arg(long = "extra-rsync-flag")]
+    pub extra_rsync_flags: Vec<String>,
+
     /// Whether the GUI HTTP server is enabled.
     #[cfg(feature = "gui")]
     #[arg(long, default_value_t = false)]
     pub gui: bool,
 
-    /// Address to bind GUI HTTP server to.
+    /// Address to bind the GUI HTTP server to.
     #[cfg(feature = "gui")]
     #[arg(long, default_value_t = "0.0.0.0:8080".to_string())]
     pub http_addr: String,
