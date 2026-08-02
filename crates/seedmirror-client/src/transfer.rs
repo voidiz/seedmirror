@@ -240,21 +240,27 @@ fn construct_rsync_cmd<'a>(
     dry_run: bool,
 ) -> (&'a str, Vec<String>) {
     let ssh_hostname = &args.ssh_hostname;
-    let mut args = vec![
+    let mut rsync_args = vec![
         "-ahz".to_string(),
         "--progress".to_string(),
         "--partial".to_string(),
         "--mkpath".to_string(), // automatically create destination path
         r#"--out-format=%n"#.to_string(),
-        format!("{}:{}", ssh_hostname, remote_path.to_string_lossy()),
-        local_path.to_string_lossy().to_string(),
     ];
 
+    rsync_args.extend(args.extra_rsync_flags.iter().cloned());
+    rsync_args.push(format!(
+        "{}:{}",
+        ssh_hostname,
+        remote_path.to_string_lossy()
+    ));
+    rsync_args.push(local_path.to_string_lossy().to_string());
+
     if dry_run {
-        args.push("-n".to_string());
+        rsync_args.push("-n".to_string());
     }
 
-    ("rsync", args)
+    ("rsync", rsync_args)
 }
 
 fn handle_rsync_output_chunk<'a>(
@@ -291,10 +297,18 @@ fn parse_rsync_output_chunk<'a>(
         // prevent parsing "receiving incremental file list" as SyncProgress
         ["receiving", ..] => None,
         // rsync sometimes puts stuff like (xfr#1, to-chk=4/7) at the end, hence the ..
-        [transferred, progress, transfer_speed, remaining, ..] => {
+        [transferred, progress_str, transfer_speed, remaining, ..] => {
+            let progress = match parse_progress(progress_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("failed to parse rsync progress: {e}");
+                    return None;
+                }
+            };
+
             Some(StateBrokerMessage::SetSyncProgress {
                 transferred: transferred.to_string(),
-                progress: progress.to_string(),
+                progress,
                 transfer_speed: transfer_speed.to_string(),
                 remaining: remaining.to_string(),
             })
@@ -304,6 +318,14 @@ fn parse_rsync_output_chunk<'a>(
             local_file_path: local_path.join(chunk).to_string_lossy().to_string(),
         }),
     }
+}
+
+fn parse_progress(progress_str: &str) -> anyhow::Result<u8> {
+    let Some(progress_str) = progress_str.strip_suffix("%") else {
+        anyhow::bail!("expected progress string to end with a percentage sign");
+    };
+
+    progress_str.parse().map_err(anyhow::Error::from)
 }
 
 /// Returns the mapping that best matches `remote_file_path` based on the remote path with the

@@ -17,16 +17,17 @@ pub(crate) enum StateBrokerMessage {
     },
 
     SetSyncProgress {
-        // Transferred so far (bytes, with unit prefix)
+        /// Transferred so far (bytes, with unit prefix)
         transferred: String,
 
-        // Progress, percentage
-        progress: String,
+        /// Progress, percentage
+        progress: u8,
 
-        // bytes/s, with unit prefix
+        /// bytes/s, with unit prefix
         transfer_speed: String,
 
-        // Estimated remining time (h:mm:ss)
+        /// Estimated remining time (h:mm:ss)
+        /// Set to time taken when progress has reached 100%
         remaining: String,
     },
 
@@ -59,7 +60,7 @@ pub(crate) struct SyncingPath {
 #[derive(Debug, Clone)]
 pub(crate) struct SyncProgress {
     pub transferred: String,
-    pub progress: String,
+    pub progress: u8,
     pub transfer_speed: String,
     pub remaining: String,
 }
@@ -70,7 +71,7 @@ pub(crate) struct FileSyncProgress {
     pub local_file_path: String,
 
     pub transferred: String,
-    pub progress: String,
+    pub progress: u8,
     pub transfer_speed: String,
     pub remaining: String,
 }
@@ -107,15 +108,20 @@ async fn state_broker(mut rx: StateBrokerRx, bcast_tx: ProgressBroadcaster) -> a
             StateBrokerMessage::SetSyncProgress {
                 transferred,
                 progress,
-                transfer_speed,
-                remaining,
+                mut transfer_speed,
+                mut remaining,
             } => {
                 if let Some(key) = state.last_syncing_path.clone() {
+                    if progress == 100 {
+                        transfer_speed = "-".to_string();
+                        remaining = "0:00:00".to_string();
+                    }
+
                     state.path_status.put(
                         key.clone(),
                         SyncProgress {
                             transferred: transferred.clone(),
-                            progress: progress.clone(),
+                            progress,
                             transfer_speed: transfer_speed.clone(),
                             remaining: remaining.clone(),
                         },

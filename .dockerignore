@@ -1,0 +1,14 @@
+# Node
+**/node_modules
+
+# Rust
+**/target
+
+# Git
+.git
+.gitignore
+.ds_store
+*.swp
+
+# Other
+*.md

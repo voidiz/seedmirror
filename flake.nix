@@ -6,7 +6,13 @@
     pkgs = import nixpkgs {inherit system;};
   in {
     devShells.${system}.default = pkgs.mkShell {
-      packages = with pkgs; [cargo rustc clippy];
+      packages = with pkgs; [
+        cargo
+        rustc
+        clippy
+        pnpm
+        nodejs
+      ];
     };
   };
 }
