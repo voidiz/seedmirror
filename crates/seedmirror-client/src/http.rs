@@ -296,5 +296,5 @@ fn serve_asset(path: &str) -> Result<Response, String> {
         .header(header::CONTENT_TYPE, mime)
         .header(header::CONTENT_ENCODING, "gzip")
         .body(Body::from(file.data))
-        .map_err(|e| format!("Failed to build response: {}", e))
+        .map_err(|e| format!("failed to build response: {}", e))
 }

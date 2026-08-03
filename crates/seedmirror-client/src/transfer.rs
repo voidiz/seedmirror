@@ -269,6 +269,8 @@ fn handle_rsync_output_chunk<'a>(
     local_path: &'a Path,
     chunk: &str,
 ) {
+    log::debug!("rsync output chunk: {chunk}");
+
     let msg = parse_rsync_output_chunk(remote_path, local_path, chunk);
     let Some(msg) = msg else {
         return;
@@ -297,15 +299,9 @@ fn parse_rsync_output_chunk<'a>(
         // prevent parsing "receiving incremental file list" as SyncProgress
         ["receiving", ..] => None,
         // rsync sometimes puts stuff like (xfr#1, to-chk=4/7) at the end, hence the ..
-        [transferred, progress_str, transfer_speed, remaining, ..] => {
-            let progress = match parse_progress(progress_str) {
-                Ok(p) => p,
-                Err(e) => {
-                    log::error!("failed to parse rsync progress: {e}");
-                    return None;
-                }
-            };
-
+        [transferred, progress_str, transfer_speed, remaining, ..]
+            if let Some(progress) = parse_progress(progress_str) =>
+        {
             Some(StateBrokerMessage::SetSyncProgress {
                 transferred: transferred.to_string(),
                 progress,
@@ -320,12 +316,8 @@ fn parse_rsync_output_chunk<'a>(
     }
 }
 
-fn parse_progress(progress_str: &str) -> anyhow::Result<u8> {
-    let Some(progress_str) = progress_str.strip_suffix("%") else {
-        anyhow::bail!("expected progress string to end with a percentage sign");
-    };
-
-    progress_str.parse().map_err(anyhow::Error::from)
+fn parse_progress(progress_str: &str) -> Option<u8> {
+    progress_str.strip_suffix("%").and_then(|v| v.parse().ok())
 }
 
 /// Returns the mapping that best matches `remote_file_path` based on the remote path with the

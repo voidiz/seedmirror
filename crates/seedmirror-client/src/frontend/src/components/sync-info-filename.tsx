@@ -30,8 +30,8 @@ export function SyncInfoFilename({ item, className }: SyncInfoFilenameProps) {
         )}
       />
       <PopoverContent side="top" align="start" className="w-80 flex flex-col gap-4">
-        <Path title="Local Path" path={item.local_file_path} />
         <Path title="Remote Path" path={item.remote_file_path} />
+        <Path title="Local Path" path={item.local_file_path} />
       </PopoverContent>
     </Popover>
   );
