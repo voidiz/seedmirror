@@ -19,6 +19,6 @@ impl Args {
     fn parse_millis(s: &str) -> clap::error::Result<Duration, String> {
         s.parse::<u64>()
             .map(Duration::from_millis)
-            .map_err(|e| format!("invalid duration '{}': {}", s, e))
+            .map_err(|e| format!("invalid duration '{s}': {e:#}"))
     }
 }

@@ -127,12 +127,18 @@ async fn handle_client_msg(
         // TODO: Exchange version information to ensure client and server match
         Message::ConnectionRequest { watched_paths } => {
             for path in watched_paths {
-                if let Err(e) = watcher.watch(&path, RecursiveMode::Recursive) {
+                let watch_res = watcher
+                    .watch(&path, RecursiveMode::Recursive)
+                    .with_context(|| format!("failed to watch path `{}`", path.to_string_lossy()));
+
+                if let Err(e) = watch_res {
                     Message::ConnectionFailed {
-                        reason: format!("failed to watch path `{}`: {}", path.to_string_lossy(), e),
+                        reason: format!("{e:#}"),
                     }
                     .write_to_stream(&mut write_stream)
                     .await?;
+
+                    anyhow::bail!(e);
                 }
             }
 
