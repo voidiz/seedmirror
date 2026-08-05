@@ -202,7 +202,7 @@ async fn full_sync(args: Args, state_tx: StateBrokerTx) -> anyhow::Result<()> {
         let (rsync_cmd, rsync_args) = construct_rsync_cmd(&args, remote_path, local_path, false);
 
         run_with_streaming_output(rsync_cmd, rsync_args, |chunk| {
-            handle_rsync_output_chunk(&state_tx, remote_path, local_path, chunk);
+            handle_rsync_output_chunk(&state_tx, remote_path, local_path, chunk, true);
         })
         .await?;
     }
@@ -231,7 +231,7 @@ async fn sync_file(
     }
 
     run_with_streaming_output(rsync_cmd, rsync_args, |chunk| {
-        handle_rsync_output_chunk(&state_tx, remote_path, local_path, chunk);
+        handle_rsync_output_chunk(&state_tx, &remote_file_path, &local_file_path, chunk, false);
     })
     .await?;
 
@@ -273,10 +273,11 @@ fn handle_rsync_output_chunk<'a>(
     remote_path: &'a Path,
     local_path: &'a Path,
     chunk: &str,
+    is_full_sync: bool,
 ) {
     log::debug!("rsync output chunk: {chunk}");
 
-    let msg = parse_rsync_output_chunk(remote_path, local_path, chunk);
+    let msg = parse_rsync_output_chunk(remote_path, local_path, chunk, is_full_sync);
     let Some(msg) = msg else {
         return;
     };
@@ -298,6 +299,7 @@ fn parse_rsync_output_chunk<'a>(
     remote_path: &'a Path,
     local_path: &'a Path,
     chunk: &str,
+    is_full_sync: bool,
 ) -> Option<StateBrokerMessage> {
     let parts = chunk.split_whitespace().collect::<Vec<_>>();
     match parts.as_slice() {
@@ -314,10 +316,26 @@ fn parse_rsync_output_chunk<'a>(
                 remaining: remaining.to_string(),
             })
         }
-        _ => Some(StateBrokerMessage::SetSyncingPath {
-            remote_file_path: remote_path.join(chunk).to_string_lossy().to_string(),
-            local_file_path: local_path.join(chunk).to_string_lossy().to_string(),
-        }),
+        _ => {
+            let remote_file_path = if is_full_sync {
+                remote_path.join(chunk).to_string_lossy().to_string()
+            } else {
+                // If not full sync, `remote_path` is already the full path (since we sync files one
+                // by one in the case of sync_file).
+                remote_path.to_string_lossy().to_string()
+            };
+
+            let local_file_path = if is_full_sync {
+                local_path.join(chunk).to_string_lossy().to_string()
+            } else {
+                local_path.to_string_lossy().to_string()
+            };
+
+            Some(StateBrokerMessage::SetSyncingPath {
+                remote_file_path,
+                local_file_path,
+            })
+        }
     }
 }
 

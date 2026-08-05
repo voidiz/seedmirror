@@ -9,10 +9,7 @@ type SyncInfoFilenameProps = {
 };
 
 export function SyncInfoFilename({ item, className }: SyncInfoFilenameProps) {
-  const displayFileName = useMemo(
-    () => getCommonSuffix(item.remote_file_path, item.local_file_path),
-    [item],
-  );
+  const displayFileName = useMemo(() => basename(item.remote_file_path), [item]);
 
   return (
     <Popover>
@@ -51,27 +48,7 @@ function Path({ title, path }: PathProps) {
   );
 }
 
-function getCommonSuffix(remotePath: string, localPath: string): string {
-  if (!remotePath || !localPath) {
-    return remotePath || localPath || "";
-  }
-
-  const partsRemote = remotePath.split("/").filter(Boolean);
-  const partsLocal = localPath.split("/").filter(Boolean);
-
-  const commonParts: string[] = [];
-  let i = partsRemote.length - 1;
-  let j = partsLocal.length - 1;
-
-  while (i >= 0 && j >= 0 && partsRemote[i] === partsLocal[j]) {
-    commonParts.unshift(partsRemote[i]);
-    i--;
-    j--;
-  }
-
-  if (commonParts.length === 0) {
-    return partsRemote[partsRemote.length - 1] || remotePath;
-  }
-
-  return commonParts.join("/");
+function basename(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? path : path.slice(i + 1);
 }
