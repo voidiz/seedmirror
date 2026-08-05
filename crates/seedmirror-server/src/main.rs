@@ -34,12 +34,23 @@ async fn main() -> anyhow::Result<()> {
                     log::info!("received SIGINT, shutting down...");
                 }
                 Err(e) => {
-                    log::error!("unable to listen for shutdown signal: {e:#}");
+                    anyhow::bail!("unable to listen for shutdown signal: {e:#}");
                 }
             }
         },
-        _ = set.join_next() => {
-            log::info!("exiting...");
+        res = set.join_next() => {
+            if let Some(join_result) = res {
+                match join_result {
+                    Ok(task_result) => {
+                        if let Err(e) = task_result {
+                            anyhow::bail!("task failed: {e:#}");
+                        }
+                    },
+                    Err(e) => {
+                        anyhow::bail!("failed to wait for task: {e:#}");
+                    }
+                }
+            }
         }
     }
 

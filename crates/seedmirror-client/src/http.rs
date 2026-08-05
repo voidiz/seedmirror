@@ -74,7 +74,7 @@ impl WsMessage {
         let json = match serde_json::to_string(&self) {
             Ok(json) => json,
             Err(e) => {
-                log::error!("failed to serialize WsMessage: {e:?}");
+                log::error!("failed to serialize WsMessage: {e:#}");
                 return;
             }
         };
@@ -82,7 +82,7 @@ impl WsMessage {
         let msg = Message::Text(json.into());
 
         if let Err(e) = socket.send(msg).await {
-            log::error!("failed to send WsMessage: {e:?}");
+            log::error!("failed to send WsMessage: {e:#}");
         }
     }
 }
@@ -211,7 +211,7 @@ async fn handle_sync_progress(
             WsMessage::SyncProgress(sync_progress).send(socket).await;
         }
         Err(e) => {
-            log::error!("failed receiving sync progress from state broker: {e:?}");
+            log::error!("failed receiving sync progress from state broker: {e:#}");
         }
     }
 }
@@ -231,10 +231,10 @@ async fn handle_client_msg(
             let req: Request = match serde_json::from_str(&text) {
                 Ok(req) => req,
                 Err(e) => {
-                    log::warn!("failed to deserialize incoming client request: {e}");
+                    log::warn!("failed to deserialize incoming client request: {e:#}");
                     WsMessage::Error(ErrorPayload {
                         code: StatusCode::BAD_REQUEST.as_u16(),
-                        message: format!("Invalid JSON request: {e}"),
+                        message: format!("Invalid JSON request: {e:#}"),
                     })
                     .send(socket)
                     .await;
@@ -256,7 +256,7 @@ async fn handle_client_msg(
             }
         }
         Some(Err(e)) => {
-            log::error!("websocket error: {e}");
+            log::error!("websocket error: {e:#}");
             return true;
         }
         _ => return false,

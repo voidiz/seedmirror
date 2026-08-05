@@ -114,7 +114,12 @@ impl RemoteWatcher {
                     )
                     .await?;
             }
-            _ => (),
+            Message::ConnectionFailed { reason } => {
+                anyhow::bail!("connection failed: {reason}");
+            }
+
+            // Client messages
+            Message::ConnectionRequest { .. } => (),
         };
 
         Ok(())

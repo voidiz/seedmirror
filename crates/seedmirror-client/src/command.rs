@@ -25,7 +25,7 @@ where
                     "executable `{cmd}` was not found on PATH while running `{cmdline}`"
                 )
             }
-            _ => anyhow::anyhow!("failed to spawn command `{cmdline}`: {e}"),
+            _ => anyhow::anyhow!("failed to spawn command `{cmdline}`: {e:#}"),
         })?;
 
     let stdout = String::from_utf8_lossy(&child.stdout);
@@ -73,7 +73,7 @@ where
                     "executable `{cmd}` was not found on PATH while running `{cmdline}`"
                 )
             }
-            _ => anyhow::anyhow!("failed to spawn command `{cmdline}`: {e}"),
+            _ => anyhow::anyhow!("failed to spawn command `{cmdline}`: {e:#}"),
         })?;
 
     let stdout = child.stdout.take().expect("stdout should not be taken");
@@ -117,7 +117,7 @@ where
     let status = child.wait().await?;
     let stderr_str = stderr_handle
         .await
-        .map_err(|e| anyhow::anyhow!("failed to join stderr reader task: {e}"))??;
+        .map_err(|e| anyhow::anyhow!("failed to join stderr reader task: {e:#}"))??;
 
     if !status.success() {
         let code_str = match status.code() {

@@ -11,10 +11,12 @@ use tokio::{
 
 use crate::{cli::Args, informer, watcher};
 
-pub(crate) async fn connection_manager(args: Args) {
+pub(crate) async fn connection_manager(args: Args) -> anyhow::Result<()> {
     if let Err(e) = connection_manager_inner(args).await {
-        log::error!("error starting connection manager: {e:#}");
+        anyhow::bail!("error starting connection manager: {e:#}");
     }
+
+    Ok(())
 }
 
 async fn connection_manager_inner(args: Args) -> anyhow::Result<()> {
@@ -125,7 +127,13 @@ async fn handle_client_msg(
         // TODO: Exchange version information to ensure client and server match
         Message::ConnectionRequest { watched_paths } => {
             for path in watched_paths {
-                watcher.watch(&path, RecursiveMode::Recursive)?;
+                if let Err(e) = watcher.watch(&path, RecursiveMode::Recursive) {
+                    Message::ConnectionFailed {
+                        reason: format!("failed to watch path `{}`: {}", path.to_string_lossy(), e),
+                    }
+                    .write_to_stream(&mut write_stream)
+                    .await?;
+                }
             }
 
             Message::Connected

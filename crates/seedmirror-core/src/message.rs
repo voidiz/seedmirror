@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::{io::ErrorKind, path::PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
@@ -12,6 +13,9 @@ pub enum Message {
 
     /// Sent by the server to acknowledge a `ConnectionRequest`.
     Connected,
+
+    /// Sent by the server when a `ConnectionRequest` fails.
+    ConnectionFailed { reason: String },
 
     /// Sent when a file is updated.
     FileUpdated {
@@ -52,9 +56,15 @@ impl Message {
         let mut line = String::new();
         reader.read_line(&mut line).await?;
 
-        let content_length: usize = line.trim().parse()?;
+        let content_length: usize = line.trim().parse().with_context(
+            || "failed to read server message content length (was the connection closed?)",
+        )?;
+
         let mut msg_bytes = vec![0; content_length];
-        reader.read_exact(&mut msg_bytes).await?;
+        reader
+            .read_exact(&mut msg_bytes)
+            .await
+            .with_context(|| "failed to read message from server")?;
 
         log::debug!("received message: {}", String::from_utf8_lossy(&msg_bytes));
         let msg: Message = serde_json::from_slice(&msg_bytes)?;

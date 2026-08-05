@@ -15,7 +15,6 @@ mod command;
 mod http;
 
 mod state;
-mod status;
 mod task;
 mod transfer;
 mod workqueue;
@@ -48,12 +47,23 @@ async fn run() -> anyhow::Result<()> {
                     log::info!("received SIGINT, shutting down...");
                 }
                 Err(e) => {
-                    log::error!("unable to listen for shutdown signal: {e:#}");
+                    anyhow::bail!("unable to listen for shutdown signal: {e:#}");
                 }
             }
         },
         res = set.join_next() => {
-            log::info!("task finished, quitting: {res:?}");
+            if let Some(join_result) = res {
+                match join_result {
+                    Ok(task_result) => {
+                        if let Err(e) = task_result {
+                            anyhow::bail!("task failed: {e:#}");
+                        }
+                    },
+                    Err(e) => {
+                        anyhow::bail!("failed to wait for task: {e:#}");
+                    }
+                }
+            }
         }
     }
 
@@ -65,7 +75,7 @@ async fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     if let Err(e) = run().await {
-        log::error!("startup failure: {e:?}");
+        log::error!("run failure: {e:#}");
         return ExitCode::FAILURE;
     }
 
