@@ -1,14 +1,20 @@
 use std::{
     collections::HashMap,
     path::{self, Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 use anyhow::Context;
 use notify::Event;
-use seedmirror_core::message::Message;
+use seedmirror_core::message::FileMeta;
 use tokio::{sync::broadcast, task::JoinHandle, time::sleep};
 
 use crate::{cli::Args, watcher::NotifyEventReceiver};
+
+#[derive(Clone, Debug)]
+pub(crate) enum BroadcastMessage {
+    FileUpdated { meta: FileMeta },
+}
 
 struct NotifyHandler {
     args: Args,
@@ -17,7 +23,7 @@ struct NotifyHandler {
     notify_rx: NotifyEventReceiver,
 
     /// Broadcast channel used to inform clients of updated files.
-    server_msg_tx: broadcast::Sender<Message>,
+    server_msg_tx: broadcast::Sender<BroadcastMessage>,
 
     /// Ongoing event handlers for file updates.
     event_handlers: HashMap<PathBuf, JoinHandle<()>>,
@@ -27,7 +33,7 @@ impl NotifyHandler {
     fn new(
         args: Args,
         notify_rx: NotifyEventReceiver,
-        server_msg_tx: broadcast::Sender<Message>,
+        server_msg_tx: broadcast::Sender<BroadcastMessage>,
     ) -> Self {
         Self {
             args,
@@ -56,9 +62,8 @@ impl NotifyHandler {
                 },
                 Ok(msg) = msg_rx.recv() => {
                     // Clean up the event handler when the message has been sent
-                    if let Message::FileUpdated { path } = msg {
-                        self.event_handlers.remove(&path);
-                    }
+                    let BroadcastMessage::FileUpdated { meta } = msg;
+                    self.event_handlers.remove(&meta.path);
                 }
             }
         }
@@ -74,18 +79,11 @@ impl NotifyHandler {
             #[allow(clippy::single_match)]
             match event.kind {
                 notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
-                    let mut path = absolute_path.clone();
+                    let meta = build_file_meta(&absolute_path).with_context(|| {
+                        format!("failed to stat updated path: {absolute_path:?}")
+                    })?;
 
-                    // Push an empty component to the path to add a trailing slash. This is
-                    // important for rsync to treat it as a directory so that
-                    // `rsync <src dir> <dst dir>`
-                    // synchronizes the state of `<src dir>` with `<dst dir>` instead of placing
-                    // `<src dir>` inside `<dst dir>`.
-                    if path.is_dir() {
-                        path.push("");
-                    }
-
-                    let msg = Message::FileUpdated { path };
+                    let msg = BroadcastMessage::FileUpdated { meta };
                     self.queue_notify_message(&absolute_path, msg);
                 }
                 notify::EventKind::Remove(_) => {
@@ -98,7 +96,7 @@ impl NotifyHandler {
         Ok(())
     }
 
-    fn queue_notify_message(&mut self, path: &Path, msg: Message) {
+    fn queue_notify_message(&mut self, path: &Path, msg: BroadcastMessage) {
         self.abort_event_handler(path);
 
         let sync_delay = self.args.sync_delay;
@@ -132,10 +130,41 @@ impl NotifyHandler {
     }
 }
 
+fn build_file_meta(absolute_path: &Path) -> anyhow::Result<FileMeta> {
+    let md = std::fs::metadata(absolute_path)
+        .with_context(|| format!("failed to stat path: {absolute_path:?}"))?;
+
+    let mut path = absolute_path.to_path_buf();
+
+    // Push an empty component to the path to add a trailing slash. This is
+    // important for rsync to treat it as a directory so that
+    // `rsync <src dir> <dst dir>`
+    // synchronizes the state of `<src dir>` with `<dst dir>` instead of placing
+    // `<src dir>` inside `<dst dir>`.
+    // TODO: remove once rsync is replaced by the fetch protocol.
+    if md.is_dir() {
+        path.push("");
+    }
+
+    let mtime_nanos = md
+        .modified()
+        .with_context(|| format!("failed to read mtime: {absolute_path:?}"))?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| anyhow::anyhow!("mtime before epoch: {e:?}"))?
+        .as_nanos() as u64;
+
+    Ok(FileMeta {
+        path,
+        size: md.len(),
+        mtime_nanos,
+        is_dir: md.is_dir(),
+    })
+}
+
 pub(crate) async fn notify_handler(
     args: Args,
     rx: NotifyEventReceiver,
-    server_msg_tx: broadcast::Sender<Message>,
+    server_msg_tx: broadcast::Sender<BroadcastMessage>,
 ) {
     let state = NotifyHandler::new(args, rx, server_msg_tx);
     if let Err(e) = state.handle().await {

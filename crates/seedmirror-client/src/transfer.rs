@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Context;
-use seedmirror_core::message::Message;
+use seedmirror_core::message::{ClientMessage, ServerMessage};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     net::UnixStream,
@@ -92,9 +92,9 @@ impl RemoteWatcher {
         }
     }
 
-    async fn handle_message(&mut self, msg: Message) -> anyhow::Result<()> {
+    async fn handle_message(&mut self, msg: ServerMessage<'_>) -> anyhow::Result<()> {
         match msg {
-            Message::Connected => {
+            ServerMessage::Connected => {
                 log::debug!("received `Connected` answer from server ",);
                 if self.args.initial_sync {
                     self.workqueue
@@ -105,7 +105,13 @@ impl RemoteWatcher {
                         .await?;
                 }
             }
-            Message::FileUpdated { path } => {
+            ServerMessage::FileUpdated { meta } => {
+                // TODO(fetch-protocol): use meta.size / meta.mtime_nanos / meta.is_dir
+                // to decide fetch vs skip. If the file doesn't exist locally, fetch it.
+                // If a transfer for meta.path is already in progress, discard it and
+                // restart from the beginning since the file was updated.
+                // For now (rsync backend) only the path is needed.
+                let path = meta.path;
                 let id = path.to_string_lossy().into_owned();
                 self.workqueue
                     .push(
@@ -114,12 +120,16 @@ impl RemoteWatcher {
                     )
                     .await?;
             }
-            Message::ConnectionFailed { reason } => {
+            ServerMessage::ConnectionFailed { reason } => {
                 anyhow::bail!("connection failed: {reason}");
             }
 
-            // Client messages
-            Message::ConnectionRequest { .. } => (),
+            // TODO(fetch-protocol): handle ListDirResponse / FileHeader / FileChunk / FileEof
+            // once rsync is removed. Ignored for now to keep the rsync backend compiling.
+            ServerMessage::ListDirResponse { .. }
+            | ServerMessage::FileHeader { .. }
+            | ServerMessage::FileChunk { .. }
+            | ServerMessage::FileEof => (),
         };
 
         Ok(())
@@ -148,20 +158,23 @@ async fn new_remote_watcher(
         .with_context(|| format!("failed to connect to socket at {local_socket_path:?}"))?;
     log::info!("connected to {local_socket_path:?}");
 
-    let req = Message::ConnectionRequest {
+    let req = ClientMessage::ConnectionRequest {
         watched_paths: args
             .path_mappings
             .iter()
             .map(|(remote, _local)| remote.clone())
             .collect(),
     };
-    req.write_to_stream(&mut stream).await?;
+    req.write_to_stream(&mut stream, &mut Vec::new()).await?;
 
     let mut watcher = RemoteWatcher::new(args, workqueue, state_tx);
     let mut reader = BufReader::new(stream);
+    // Reusable buffer. `msg` borrows from it,
+    // so it must be processed before the next read overwrites it.
+    let mut read_buf = Vec::new();
 
     loop {
-        let msg = Message::read_from_reader(&mut reader).await?;
+        let msg = ServerMessage::read_from_reader(&mut reader, &mut read_buf).await?;
         watcher.handle_message(msg).await?;
     }
 }

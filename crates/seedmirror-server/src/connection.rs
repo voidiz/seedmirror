@@ -1,6 +1,6 @@
 use anyhow::Context;
 use notify::{RecursiveMode, Watcher};
-use seedmirror_core::message::Message;
+use seedmirror_core::message::{ClientMessage, ServerMessage};
 use tokio::{
     fs::remove_file,
     io::BufReader,
@@ -9,7 +9,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::{cli::Args, informer, watcher};
+use crate::{cli::Args, informer::{self, BroadcastMessage}, watcher};
 
 pub(crate) async fn connection_manager(args: Args) -> anyhow::Result<()> {
     if let Err(e) = connection_manager_inner(args).await {
@@ -52,7 +52,7 @@ async fn connection_handler(args: Args, stream: UnixStream) {
 async fn connection_handler_inner(args: Args, mut stream: UnixStream) -> anyhow::Result<()> {
     log::info!("established socket connection with client");
 
-    let (server_msg_tx, mut server_msg_rx) = broadcast::channel::<Message>(100);
+    let (server_msg_tx, mut server_msg_rx) = broadcast::channel::<BroadcastMessage>(100);
 
     // Watcher will be shut down on drop
     let (mut watcher, notify_rx) = watcher::create_watcher().await?;
@@ -60,17 +60,20 @@ async fn connection_handler_inner(args: Args, mut stream: UnixStream) -> anyhow:
     let mut set = JoinSet::new();
     set.spawn(informer::notify_handler(args, notify_rx, server_msg_tx));
 
+    let mut read_buf = Vec::new();
+    let mut write_buf = Vec::new();
+
     loop {
         tokio::select! {
             res = server_msg_rx.recv() => {
-                match handle_server_msg(res, &mut stream).await {
+                match handle_server_msg(res, &mut stream, &mut write_buf).await {
                     Ok(true) => break,
                     Ok(false) => (),
                     Err(e) => anyhow::bail!(e),
                 };
             }
             Ok(_) = stream.readable() => {
-                match handle_client_msg(&mut watcher, &mut stream).await {
+                match handle_client_msg(&mut watcher, &mut stream, &mut read_buf, &mut write_buf).await {
                     Ok(true) => break,
                     Ok(false) => (),
                     Err(e) => anyhow::bail!(e),
@@ -85,12 +88,14 @@ async fn connection_handler_inner(args: Args, mut stream: UnixStream) -> anyhow:
 
 /// Returns true if the connection should be terminated.
 async fn handle_server_msg(
-    res: Result<Message, broadcast::error::RecvError>,
+    res: Result<BroadcastMessage, broadcast::error::RecvError>,
     stream: &mut UnixStream,
+    write_buf: &mut Vec<u8>,
 ) -> anyhow::Result<bool> {
     match res {
-        Ok(msg) => {
-            if msg.write_to_stream(stream).await? {
+        Ok(BroadcastMessage::FileUpdated { meta }) => {
+            let msg = ServerMessage::FileUpdated { meta };
+            if msg.write_to_stream(stream, write_buf).await? {
                 return Ok(true);
             }
         }
@@ -107,11 +112,13 @@ async fn handle_server_msg(
 async fn handle_client_msg(
     watcher: &mut impl Watcher,
     stream: &mut UnixStream,
+    read_buf: &mut Vec<u8>,
+    write_buf: &mut Vec<u8>,
 ) -> anyhow::Result<bool> {
     let (read_stream, mut write_stream) = tokio::io::split(&mut *stream);
 
     let mut reader = BufReader::new(read_stream);
-    let msg = match Message::read_from_reader(&mut reader).await {
+    let msg = match ClientMessage::read_from_reader(&mut reader, read_buf).await {
         Ok(msg) => msg,
         Err(e) => {
             log::debug!(
@@ -125,28 +132,30 @@ async fn handle_client_msg(
     #[allow(clippy::single_match)]
     match msg {
         // TODO: Exchange version information to ensure client and server match
-        Message::ConnectionRequest { watched_paths } => {
+        ClientMessage::ConnectionRequest { watched_paths } => {
             for path in watched_paths {
                 let watch_res = watcher
                     .watch(&path, RecursiveMode::Recursive)
                     .with_context(|| format!("failed to watch path `{}`", path.to_string_lossy()));
 
                 if let Err(e) = watch_res {
-                    Message::ConnectionFailed {
+                    ServerMessage::ConnectionFailed {
                         reason: format!("{e:#}"),
                     }
-                    .write_to_stream(&mut write_stream)
+                    .write_to_stream(&mut write_stream, write_buf)
                     .await?;
 
                     anyhow::bail!(e);
                 }
             }
 
-            Message::Connected
-                .write_to_stream(&mut write_stream)
+            ServerMessage::Connected
+                .write_to_stream(&mut write_stream, write_buf)
                 .await?;
         }
-        _ => (),
+        // TODO(fetch-protocol): handle ListDir / FetchFile by walking the
+        // filesystem and streaming back ListDirResponse / FileHeader+chunks+Eof.
+        ClientMessage::ListDir { .. } | ClientMessage::FetchFile { .. } => (),
     }
 
     Ok(false)
