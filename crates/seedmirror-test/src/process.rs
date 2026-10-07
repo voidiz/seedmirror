@@ -9,6 +9,10 @@ impl ProcessGuard {
         let child = cmd.spawn()?;
         Ok(Self { child })
     }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
 }
 
 impl Drop for ProcessGuard {
