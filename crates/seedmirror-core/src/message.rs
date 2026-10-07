@@ -74,7 +74,10 @@ pub enum ServerMessage<'a> {
 
     /// Sent by the server following `FileHeader`. All following `FileChunk`s must belong to the file
     /// corresponding to the preceding `FileHeader`.
-    FileChunk { data: &'a [u8] },
+    FileChunk {
+        #[serde(with = "serde_bytes")]
+        data: &'a [u8],
+    },
 
     /// Sent by the server following the last `FileChunk`. If this message is not received at the
     /// end of the file, it is safe for the client to delete the partial file. Conversely, when the
