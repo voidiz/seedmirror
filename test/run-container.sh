@@ -5,8 +5,7 @@ set -euo pipefail
 IMAGE_NAME="seedmirror-test"
 CONTAINER_NAME="seedmirror-test"
 
-echo "Building Docker image ${IMAGE_NAME}..."
-docker build -t "${IMAGE_NAME}" ./docker/seedmirror-test
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ $(docker ps -q -f name=^/${CONTAINER_NAME}$) ]]; then
     echo "Attaching to existing container '${CONTAINER_NAME}'..."
@@ -18,6 +17,8 @@ echo "Starting new container '${CONTAINER_NAME}'..."
 docker run -it \
   --rm \
   --name "${CONTAINER_NAME}" \
-  -v "$(pwd):/workspace" \
+  -v "${REPO_ROOT}:/workspace" \
   -p 8080:8080 \
+  --cap-add=PERFMON \
+  --cap-add=SYS_PTRACE \
   "${IMAGE_NAME}"
