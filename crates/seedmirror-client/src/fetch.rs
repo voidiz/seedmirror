@@ -185,70 +185,181 @@ pub(crate) async fn prepare_sync(
     mappings: &[PathMapping],
     dry_run: bool,
 ) -> anyhow::Result<Option<PathBuf>> {
+    let local_path = resolve_local_path(meta, mappings)?;
+    let local_is_dir = match std::fs::symlink_metadata(&local_path) {
+        Ok(md) => Some(md.is_dir() && !md.file_type().is_symlink()),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => anyhow::bail!("failed to stat local {local_path:?}: {e:#}"),
+    };
+
+    match (local_is_dir, meta.is_dir) {
+        // Remote dir already exists locally
+        (Some(true), true) => Ok(None),
+
+        // Remote file exists locally as a file, need to check whether the contents match
+        (Some(false), false) => Ok(Some(local_path)),
+
+        // Remote file missing locally
+        (None, false) => Ok(Some(local_path)),
+
+        // Remote dir missing locally
+        (None, true) => create_dir(&local_path, dry_run).await,
+
+        // Remote is file but local is dir
+        (Some(true), false) => {
+            log_replace(dry_run, &local_path, true, false);
+            if dry_run {
+                return Ok(None);
+            }
+
+            remove_local(&local_path, true)?;
+            Ok(Some(local_path))
+        }
+
+        // Remote is dir but local is file
+        (Some(false), true) => {
+            log_replace(dry_run, &local_path, false, true);
+            if dry_run {
+                return Ok(None);
+            }
+            remove_local(&local_path, false)?;
+            create_dir(&local_path, dry_run).await
+        }
+    }
+}
+
+fn log_replace(dry_run: bool, local: &Path, local_is_dir: bool, remote_is_dir: bool) {
+    let verb = if dry_run {
+        "would replace"
+    } else {
+        "replacing"
+    };
+    let local_kind = if local_is_dir { "dir" } else { "file" };
+    let remote_kind = if remote_is_dir { "dir" } else { "file" };
+    log::info!("{verb} mismatched {local:?} (local is {local_kind}, remote is {remote_kind})");
+}
+
+fn resolve_local_path(meta: &FileMeta, mappings: &[PathMapping]) -> anyhow::Result<PathBuf> {
     let mapping = best_prefix_match(&meta.path, mappings)
         .cloned()
         .with_context(|| format!("received file meta for unwatched path: {:?}", meta.path))?;
 
-    let local = mapping
-        .local
-        .join(meta.path.strip_prefix(&mapping.strip).with_context(|| {
-            format!(
-                "failed to relativize {:?} under {:?}",
-                meta.path, mapping.strip
-            )
-        })?);
+    let relative = meta.path.strip_prefix(&mapping.strip).with_context(|| {
+        format!(
+            "failed to relativize {:?} under {:?}",
+            meta.path, mapping.strip
+        )
+    })?;
 
-    match std::fs::symlink_metadata(&local) {
-        Ok(md) => {
-            let is_dir = md.is_dir() && !md.file_type().is_symlink();
-            if is_dir != meta.is_dir {
-                if dry_run {
-                    log::info!("would replace mismatched {local:?}");
-                    return Ok(None);
-                }
+    Ok(mapping.local.join(relative))
+}
 
-                if is_dir {
-                    std::fs::remove_dir_all(&local)
-                        .with_context(|| format!("failed to remove dir {local:?}"))?;
-                } else {
-                    std::fs::remove_file(&local)
-                        .with_context(|| format!("failed to remove file {local:?}"))?;
-                }
-            }
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => anyhow::bail!("failed to stat local {local:?}: {e:#}"),
-    }
-
-    if meta.is_dir {
-        if dry_run {
-            log::info!("would create dir {local:?}");
-            return Ok(None);
-        }
-
-        tokio::fs::create_dir_all(&local)
-            .await
-            .with_context(|| format!("failed to create dir {local:?}"))?;
-
+async fn create_dir(local: &Path, dry_run: bool) -> anyhow::Result<Option<PathBuf>> {
+    if dry_run {
+        log::info!("would create dir {local:?}");
         return Ok(None);
     }
 
-    Ok(Some(local))
+    log::info!("creating dir {local:?}");
+    tokio::fs::create_dir_all(local)
+        .await
+        .with_context(|| format!("failed to create dir {local:?}"))?;
+
+    Ok(None)
 }
 
-/// Returns true if `local` matches remote `meta`.
-pub(crate) fn local_matches(local: &Path, meta: &FileMeta) -> anyhow::Result<bool> {
-    let md = match std::fs::metadata(local) {
+fn remove_local(local: &Path, is_dir: bool) -> anyhow::Result<()> {
+    if is_dir {
+        std::fs::remove_dir_all(local).with_context(|| format!("failed to remove dir {local:?}"))
+    } else {
+        std::fs::remove_file(local).with_context(|| format!("failed to remove file {local:?}"))
+    }
+}
+
+/// Why local file state does not match remote `meta`
+pub(crate) enum MismatchReason {
+    /// No local file exists
+    Missing,
+
+    /// Local and remote differ in file vs dir
+    TypeMismatch {
+        local_is_dir: bool,
+        remote_is_dir: bool,
+    },
+
+    /// Same mtime but different sizes
+    Size { local: u64, remote: u64 },
+
+    /// Same size but different mtimes
+    Mtime { local: u64, remote: u64 },
+}
+
+impl std::fmt::Display for MismatchReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(f, "local missing"),
+            Self::TypeMismatch {
+                local_is_dir,
+                remote_is_dir,
+            } => write!(
+                f,
+                "type mismatch (local is {}, remote is {})",
+                if *local_is_dir { "dir" } else { "file" },
+                if *remote_is_dir { "dir" } else { "file" },
+            ),
+            Self::Size { local, remote } => write!(
+                f,
+                "size mismatch (local {} vs remote {})",
+                human_bytes(*local),
+                human_bytes(*remote)
+            ),
+            Self::Mtime { local, remote } => {
+                write!(f, "mtime mismatch (local {local} vs remote {remote})")
+            }
+        }
+    }
+}
+
+/// Returns `None` when `local` matches `remote_meta`, otherwise the reason they differ.
+pub(crate) fn mismatch_reason(
+    local: &Path,
+    remote_meta: &FileMeta,
+    tolerance_nanos: u64,
+) -> anyhow::Result<Option<MismatchReason>> {
+    let local_meta = match std::fs::metadata(local) {
         Ok(md) => md,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Some(MismatchReason::Missing)),
         Err(e) => anyhow::bail!("failed to stat local {local:?}: {e:#}"),
     };
 
-    if md.is_dir() || meta.is_dir {
-        return Ok(md.is_dir() && meta.is_dir);
+    if local_meta.is_dir() || remote_meta.is_dir {
+        let local_is_dir = local_meta.is_dir();
+        if local_is_dir == remote_meta.is_dir {
+            return Ok(None);
+        }
+
+        return Ok(Some(MismatchReason::TypeMismatch {
+            local_is_dir,
+            remote_is_dir: remote_meta.is_dir,
+        }));
     }
 
-    Ok(md.len() == meta.size && local_mtime_nanos(&md)? == meta.mtime_nanos)
+    if local_meta.len() != remote_meta.size {
+        return Ok(Some(MismatchReason::Size {
+            local: local_meta.len(),
+            remote: remote_meta.size,
+        }));
+    }
+
+    let local_mtime = local_mtime_nanos(&local_meta)?;
+    if local_mtime.abs_diff(remote_meta.mtime_nanos) > tolerance_nanos {
+        return Ok(Some(MismatchReason::Mtime {
+            local: local_mtime,
+            remote: remote_meta.mtime_nanos,
+        }));
+    }
+
+    Ok(None)
 }
 
 pub(crate) fn set_syncing_path(state_tx: &StateBrokerTx, meta: &FileMeta, local: &Path) {

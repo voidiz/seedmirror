@@ -33,6 +33,12 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
 
+    /// Control the tolerance window of the modified time (mtime) check when syncing a file. If the
+    /// mtime of the local file and remote file differ by less than this value and all other
+    /// heuristics (file size) are the same, the file will not be synced.
+    #[arg(long, default_value_t = 1, value_name = "SECONDS")]
+    pub modify_window: u64,
+
     /// Path to unix domain socket to forward from server.
     #[arg(long, default_value_os_t = PathBuf::from("/tmp/seedmirror-server.sock"))]
     pub socket_path: PathBuf,

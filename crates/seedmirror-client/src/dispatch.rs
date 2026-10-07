@@ -21,7 +21,7 @@ use tokio::{
 
 use crate::{
     cli::{Args, PathMapping},
-    fetch::{Fetch, FetchOutcome, human_bytes, local_matches, prepare_sync, set_syncing_path},
+    fetch::{Fetch, FetchOutcome, human_bytes, mismatch_reason, prepare_sync, set_syncing_path},
     state::StateBrokerTx,
 };
 
@@ -205,14 +205,15 @@ impl State {
     }
 
     async fn begin_fetch(&mut self, meta: FileMeta, local: PathBuf) -> anyhow::Result<bool> {
-        if local_matches(&local, &meta)? {
+        let tolerance_nanos = self.args.modify_window.saturating_mul(1_000_000_000);
+        let Some(reason) = mismatch_reason(&local, &meta, tolerance_nanos)? else {
             self.work.remove(&meta.path);
             return Ok(false);
-        }
+        };
 
         if self.args.dry_run {
             log::info!(
-                "would sync remote {:?} to local {local:?} (size: {})",
+                "would sync remote {:?} to local {local:?} (size: {}, reason: {reason})",
                 meta.path,
                 human_bytes(meta.size)
             );
@@ -222,7 +223,7 @@ impl State {
         }
 
         log::info!(
-            "syncing remote {:?} to local {local:?} (size: {})",
+            "syncing remote {:?} to local {local:?} (size: {}, reason: {reason})",
             meta.path,
             human_bytes(meta.size)
         );
