@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -29,10 +29,11 @@ fn test_full_sync() -> anyhow::Result<()> {
     let _ = Command::new("cargo")
         .current_dir(&test_dir.workspace_dir)
         .arg("build")
+        .arg("--release")
         .status()?;
 
     let _server = ProcessGuard::spawn(
-        Command::new("target/debug/seedmirror-server")
+        Command::new("target/release/seedmirror-server")
             .current_dir(&test_dir.workspace_dir)
             .arg("--socket-path")
             .arg(&socket_path)
@@ -42,7 +43,7 @@ fn test_full_sync() -> anyhow::Result<()> {
 
     // This will trigger a full sync
     let _client = ProcessGuard::spawn(
-        Command::new("target/debug/seedmirror-client")
+        Command::new("target/release/seedmirror-client")
             .current_dir(&test_dir.workspace_dir)
             .arg("--socket-path")
             .arg(&socket_path)
@@ -56,8 +57,10 @@ fn test_full_sync() -> anyhow::Result<()> {
             )),
     )?;
 
-    // Wait a second for the full sync to finish
-    thread::sleep(Duration::new(1, 0));
+    // Wait for the initial sync
+    wait_until(Duration::from_secs(10), || {
+        initial_files_present(&expected_dst, &dst)
+    })?;
 
     // This will trigger sync for a single file
     fs::write(src.join("new_file.txt"), "")?;
@@ -67,6 +70,49 @@ fn test_full_sync() -> anyhow::Result<()> {
     assert_dst_contains_src(&expected_dst, &dst)?;
 
     Ok(())
+}
+
+/// Poll `cond` until it holds or `timeout` expires.
+fn wait_until(timeout: Duration, mut cond: impl FnMut() -> bool) -> anyhow::Result<()> {
+    let start = Instant::now();
+    while !cond() {
+        if start.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for expected synced state");
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
+
+/// True if everything in `expected` except `new_file.txt` (which doesn't
+/// exist on the source side yet) is present in `dst`, recursively.
+fn initial_files_present(expected: &Path, dst: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(expected) else {
+        return false;
+    };
+
+    entries.flatten().all(|entry| {
+        if entry.file_name() == "new_file.txt" {
+            return true;
+        }
+
+        let src_path = entry.path();
+        let Ok(rel) = src_path.strip_prefix(expected) else {
+            return false;
+        };
+
+        let dst_path = dst.join(rel);
+        if !dst_path.exists() {
+            return false;
+        }
+
+        if src_path.is_dir() {
+            return initial_files_present(&src_path, &dst_path);
+        }
+
+        true
+    })
 }
 
 struct TestDir {

@@ -8,7 +8,6 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     openssh-server \
-    rsync \
     build-essential \
     git \
     ca-certificates \

@@ -34,7 +34,7 @@ FROM debian:trixie-slim AS final
 ARG APP_NAME
 
 RUN apt-get update && apt-get install -y \
-    openssh-client rsync && \
+    openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /bin/$APP_NAME /bin/

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::{
     Router,
     body::Body,
@@ -134,7 +135,10 @@ pub(crate) async fn init_http_server(
             state_bcast,
         });
 
-    let listener = TcpListener::bind(&args.http_addr).await?;
+    let listener = TcpListener::bind(&args.http_addr)
+        .await
+        .with_context(|| format!("failed to bind http server to {}", args.http_addr))?;
+
     log::info!("websocket server running on {}", args.http_addr);
 
     Ok(Box::pin(async move {

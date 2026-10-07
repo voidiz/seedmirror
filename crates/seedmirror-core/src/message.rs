@@ -1,6 +1,10 @@
+/// Message protocol used to communicate between seedmirror-client and seedmirror-server. Includes
+/// sending file chunks. The protocol is serial, so there are no IDs. For example, if the client
+/// sends `FetchFile`, all file-related messages from the server will be in response to that
+/// request.
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::{fmt::Debug, io::ErrorKind, path::PathBuf};
+use std::{fmt::Debug, path::PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// 1 MiB
@@ -14,13 +18,23 @@ pub enum ClientMessage {
         watched_paths: Vec<PathBuf>,
     },
 
-    /// Sent by the client to recursively walk `path` on the server.
-    ListDir { id: u32, path: PathBuf },
+    /// Sent by the client to recursively walk `path` on the server. If `path` is a file rather than
+    /// a directory, the response contains just that file's entry.
+    ListDir { path: PathBuf },
 
     /// Sent by the client to fetch a specific file. This generally happens when the client has done
-    /// a `ListDir` and it identifies mismatches in `mtime` + `size`. Multiple `FetchFile`s can be
-    /// sent at once, but the server should only handle one at a time.
-    FetchFile { id: u32, path: PathBuf },
+    /// a `ListDir` and it identifies mismatches in `mtime` + `size`.
+    FetchFile { path: PathBuf },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum FetchFailure {
+    /// The file changed on the server mid-transfer. This is generally followed by a new
+    /// `FileUpdated` from the server.
+    Stale,
+
+    /// Any other error.
+    Unavailable,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -32,22 +46,24 @@ pub enum ServerMessage<'a> {
     ConnectionFailed { reason: String },
 
     /// Sent by the server when a file in a monitored directory is updated.
-    /// If this message is received by a client in the middle of a file transfer with the same
-    /// meta.path, the client should discard the previous version of the file.
     FileUpdated { meta: FileMeta },
 
     /// Sent by the server in response to `ListDir`.
-    ListDirResponse {
-        // Matches the `id` of the corresponding `ListDir` call.
-        id: u32,
-        entries: Vec<FileMeta>,
+    ListDirResponse { entries: Vec<FileMeta> },
+
+    /// Sent by the server when a `ListDir` request fails.
+    ListDirFailed { reason: String },
+
+    /// Sent by the server when a `FetchFile` request fails before or during
+    /// transfer.
+    FetchFailed {
+        /// Why the transfer was aborted.
+        kind: FetchFailure,
+        reason: String,
     },
 
     /// Sent by the server in response to `FetchFile`.
     FileHeader {
-        /// Matches the `id` of the corresponding `FetchFile` call.
-        id: u64,
-
         /// Size of the file, used to determine the chunk size
         size: u64,
 
@@ -71,7 +87,7 @@ async fn write_inner<T>(
     msg: &T,
     mut stream: impl AsyncWriteExt + Unpin,
     buf: &mut Vec<u8>,
-) -> anyhow::Result<bool>
+) -> anyhow::Result<()>
 where
     T: Serialize + Debug,
 {
@@ -84,30 +100,19 @@ where
         );
     }
 
-    let write_result = async {
+    async {
         stream.write_all(&(buf.len() as u32).to_le_bytes()).await?;
         stream.write_all(buf).await?;
         stream.flush().await?;
         Ok::<_, std::io::Error>(())
     }
-    .await;
+    .await
+    .map_err(|e| anyhow::anyhow!(e).context("failed writing to socket"))?;
 
-    if let Err(e) = write_result {
-        match e.kind() {
-            ErrorKind::BrokenPipe => {
-                return Ok(true);
-            }
-            _ => {
-                return Err(anyhow::anyhow!(e).context("failed writing to socket"));
-            }
-        }
-    }
-
-    Ok(false)
+    Ok(())
 }
 
-/// Deserialize length-prefixed `T` from `reader`. `buf` is used to avoid allocating a buffer for
-/// every `T`.
+/// Deserialize length-prefixed `T` from `reader`, reusing `buf`.
 async fn read_inner<'a, T, R>(reader: &mut R, buf: &'a mut Vec<u8>) -> anyhow::Result<T>
 where
     T: Deserialize<'a>,
@@ -138,7 +143,7 @@ impl ClientMessage {
         &self,
         stream: impl AsyncWriteExt + Unpin,
         buf: &mut Vec<u8>,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<()> {
         write_inner(self, stream, buf).await
     }
 
@@ -157,7 +162,7 @@ impl<'a> ServerMessage<'a> {
         &self,
         stream: impl AsyncWriteExt + Unpin,
         buf: &mut Vec<u8>,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<()> {
         write_inner(self, stream, buf).await
     }
 
@@ -170,11 +175,9 @@ impl<'a> ServerMessage<'a> {
     {
         let msg: ServerMessage<'a> = read_inner(reader, buf).await?;
 
-        match &msg {
-            ServerMessage::FileChunk { data } => {
-                log::debug!("received FileChunk ({} bytes)", data.len());
-            }
-            _ => log::debug!("received server message: {msg:?}"),
+        // Skip chunk payloads to reduce noise
+        if !matches!(msg, ServerMessage::FileChunk { .. }) {
+            log::debug!("received server message: {msg:?}");
         }
 
         Ok(msg)

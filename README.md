@@ -1,11 +1,10 @@
 # seedmirror
 
-seedmirror is a utility to monitor remote filesystem changes and automatically synchronize them to a local directory using rsync over ssh.
+seedmirror is a utility to monitor remote filesystem changes and automatically synchronize them to a local directory over ssh.
 
 ## running (binary)
 
 - openssh 6.7+ (for unix domain socket forwarding support, client and server)
-- rsync 3.2.3+ (for --mkpath flag, client only)
 
 Download the latest release [here](https://github.com/voidiz/seedmirror/releases) or [build](BUILDING.md) the binaries yourself.
 
