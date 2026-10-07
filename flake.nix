@@ -28,6 +28,8 @@
         rustToolchain
         pkgs.pnpm
         pkgs.nodejs
+        pkgs.just
+        pkgs.samply
       ];
 
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/cc";
