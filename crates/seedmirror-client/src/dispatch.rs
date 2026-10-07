@@ -133,11 +133,19 @@ struct State {
 
 impl State {
     fn new(args: Args, state_tx: StateBrokerTx, writer: Writer) -> Self {
-        let mappings = if args.no_initial_sync {
+        let mappings: VecDeque<PathMapping> = if args.no_initial_sync {
             VecDeque::new()
         } else {
             args.path_mappings.iter().cloned().collect()
         };
+
+        if args.no_initial_sync {
+            log::info!("initial sync disabled, watching for live updates");
+        } else if mappings.is_empty() {
+            log::info!("initial sync listing complete");
+        } else {
+            log::info!("starting initial sync for {} paths", mappings.len());
+        }
 
         Self {
             args,
@@ -293,8 +301,17 @@ impl State {
 
         self.pending = Pending::None;
 
+        let num_entries = entries.len();
         for entry in entries {
             self.work.insert(entry.path.clone(), entry);
+        }
+
+        let total = self.args.path_mappings.len();
+        let done = total - self.mappings.len();
+        log::info!("listing {done}/{total} returned {num_entries} entries");
+
+        if self.mappings.is_empty() {
+            log::info!("initial sync listing complete");
         }
 
         Ok(())
