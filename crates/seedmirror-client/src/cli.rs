@@ -22,11 +22,11 @@ pub(crate) struct Args {
         value_parser = Self::parse_path_mapping,
         action = clap::ArgAction::Append
     )]
-    pub path_mappings: Vec<(PathBuf, PathBuf)>,
+    pub path_mappings: Vec<PathMapping>,
 
-    /// Perform full sync of remote directory upon connecting.
-    #[arg(long, default_value_t = true)]
-    pub initial_sync: bool,
+    /// Disable the full sync of every mapped path upon connecting.
+    #[arg(long)]
+    pub no_initial_sync: bool,
 
     /// Preview all file changes through logs. No actual syncing of files (or full sync) will be
     /// done.
@@ -41,10 +41,6 @@ pub(crate) struct Args {
     #[arg(long, default_value_os_t = PathBuf::from("/tmp/forwarded-seedmirror-server.sock"))]
     pub local_socket_path: PathBuf,
 
-    /// Additional rsync flags. Specify multiple times for multiple flags.
-    #[arg(long = "extra-rsync-flag")]
-    pub extra_rsync_flags: Vec<String>,
-
     /// Whether the GUI HTTP server is enabled.
     #[cfg(feature = "gui")]
     #[arg(long, default_value_t = false)]
@@ -56,17 +52,45 @@ pub(crate) struct Args {
     pub http_addr: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PathMapping {
+    /// Remote root to watch and list (trailing slash normalized away).
+    pub remote: PathBuf,
+
+    /// Local destination root.
+    pub local: PathBuf,
+
+    /// The base path used to calculate the local path from the remote path.
+    /// It is `remote` for `src/`, the parent of `remote` for `src`.
+    pub strip: PathBuf,
+}
+
 impl Args {
-    fn parse_path_mapping(s: &str) -> clap::error::Result<(PathBuf, PathBuf), String> {
-        let parts: Vec<_> = s.split(':').collect();
-        if parts.len() != 2 {
+    fn parse_path_mapping(s: &str) -> clap::error::Result<PathMapping, String> {
+        let parts = s.split(':').collect::<Vec<_>>();
+        let [remote_str, local_str] = parts[..] else {
             return Err("expected <remote source path>:<local destination path>".into());
-        }
+        };
 
-        let remote_path = Self::parse_absolute_path(parts[0])?;
-        let local_path = Self::parse_absolute_path(parts[1])?;
+        let remote_path = Self::parse_absolute_path(remote_str)?;
+        let local_path = Self::parse_absolute_path(local_str)?;
 
-        Ok((remote_path, local_path))
+        let strip = if remote_str.ends_with('/') {
+            remote_path.clone()
+        } else {
+            // Unreachable for `/`. Since it ends with `/` it falls under the branch above.
+            // `parent()` is `None` only for root.
+            remote_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .ok_or_else(|| format!("cannot place filesystem root into target: {s}"))?
+        };
+
+        Ok(PathMapping {
+            remote: remote_path,
+            local: local_path,
+            strip,
+        })
     }
 
     fn parse_absolute_path(s: &str) -> clap::error::Result<PathBuf, String> {

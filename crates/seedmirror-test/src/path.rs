@@ -2,33 +2,6 @@ use std::{fs, path::Path};
 
 use anyhow::Context;
 
-pub fn copy_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    if !dst.exists() {
-        fs::create_dir_all(dst)?;
-    }
-
-    if !src.is_dir() {
-        anyhow::bail!("src: {src:?} must be a directory");
-    }
-
-    for entry_res in fs::read_dir(src)? {
-        let entry = entry_res?.path();
-        let dst_path = dst.join(
-            entry
-                .file_name()
-                .with_context(|| "invalid final path component".to_string())?,
-        );
-
-        if entry.is_dir() {
-            copy_recursive(&entry, &dst_path)?;
-        } else {
-            fs::copy(&entry, &dst_path)?;
-        }
-    }
-
-    Ok(())
-}
-
 pub fn assert_dst_contains_src(src: &Path, dst: &Path) -> anyhow::Result<()> {
     for entry_res in fs::read_dir(src)? {
         let entry = entry_res?.path();
@@ -52,4 +25,8 @@ pub fn assert_dst_contains_src(src: &Path, dst: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn dir_contains(src: &Path, dst: &Path) -> bool {
+    assert_dst_contains_src(src, dst).is_ok()
 }

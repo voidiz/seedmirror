@@ -6,18 +6,18 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::{state::init_state_broker, transfer::init_remote_watcher, workqueue::Workqueue};
+use crate::{state::init_state_broker, dispatch::init_remote_watcher};
 
 mod cli;
-mod command;
+mod dispatch;
+mod fetch;
+mod file;
 
 #[cfg(feature = "gui")]
 mod http;
 
 mod state;
 mod task;
-mod transfer;
-mod workqueue;
 
 async fn run() -> anyhow::Result<()> {
     let args = cli::Args::parse();
@@ -26,7 +26,6 @@ async fn run() -> anyhow::Result<()> {
 
     let (state_updater, state_tx, state_bcast) = init_state_broker();
 
-    let queue = Workqueue::new();
     let mut set = JoinSet::new();
     set.spawn(state_updater);
 
@@ -35,7 +34,7 @@ async fn run() -> anyhow::Result<()> {
         set.spawn(http::init_http_server(&args, state_tx.clone(), state_bcast).await?);
     }
 
-    set.spawn(init_remote_watcher(&args, queue, state_tx)?);
+    set.spawn(init_remote_watcher(&args, state_tx)?);
 
     tokio::select! {
         _ = sigterm.recv() => {
