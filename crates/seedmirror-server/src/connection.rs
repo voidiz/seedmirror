@@ -206,8 +206,31 @@ async fn handle_server_msg(
                 }
             };
 
-            let msg = ServerMessage::FileUpdated { meta };
-            msg.write_to_stream(stream, write_buf).await?;
+            if !meta.is_dir {
+                ServerMessage::FileUpdated { meta }
+                    .write_to_stream(stream, write_buf)
+                    .await?;
+
+                return Ok(());
+            }
+
+            // The directory might contain additional existing entries, make sure we report them all
+            match list_dir(&path).await {
+                Ok(entries) => {
+                    for meta in entries {
+                        ServerMessage::FileUpdated { meta }
+                            .write_to_stream(&mut *stream, write_buf)
+                            .await?;
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to list contents of updated dir {path:?}: {e:#}");
+
+                    ServerMessage::FileUpdated { meta }
+                        .write_to_stream(stream, write_buf)
+                        .await?;
+                }
+            }
         }
         Err(broadcast::error::RecvError::Lagged(skipped)) => {
             log::warn!("receiving too many filesystem events, skipping {skipped} event(s)");

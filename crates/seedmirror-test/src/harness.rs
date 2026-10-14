@@ -121,6 +121,7 @@ impl Fixture {
 
         let target_paths = self.target.iter().map(|(rel, _)| rel.clone()).collect();
         let socket_path = root.join("seedmirror-server.sock");
+        let local_socket_path = root.join("forwarded-seedmirror-server.sock");
 
         Ok(SyncHarness {
             workspace_dir,
@@ -128,6 +129,7 @@ impl Fixture {
             src,
             dst,
             socket_path,
+            local_socket_path,
             target_paths,
         })
     }
@@ -139,6 +141,7 @@ pub struct SyncHarness {
     pub src: PathBuf,
     pub dst: PathBuf,
     pub socket_path: PathBuf,
+    pub local_socket_path: PathBuf,
     target_paths: Vec<PathBuf>,
 }
 
@@ -174,6 +177,8 @@ impl SyncHarness {
         cmd.current_dir(&self.workspace_dir)
             .arg("--socket-path")
             .arg(&self.socket_path)
+            .arg("--local-socket-path")
+            .arg(&self.local_socket_path)
             .arg("--ssh-hostname")
             .arg("localhost")
             .arg("-p")
