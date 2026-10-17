@@ -5,6 +5,9 @@ use std::{
 };
 
 use anyhow::Context;
+use seedmirror_core::message::FileMeta;
+
+use crate::cli::PathMapping;
 
 /// Generates a temp file path next to the destination.
 pub(crate) fn tmp_path(local: &Path) -> PathBuf {
@@ -57,4 +60,65 @@ pub(crate) async fn finalize_tmp(
         .with_context(|| format!("failed to move {tmp:?} to {local:?}"))?;
 
     Ok(())
+}
+
+pub(crate) async fn create_dir(local: &Path, dry_run: bool) -> anyhow::Result<Option<PathBuf>> {
+    if dry_run {
+        log::info!("would create dir {local:?}");
+        return Ok(None);
+    }
+
+    log::info!("creating dir {local:?}");
+    tokio::fs::create_dir_all(local)
+        .await
+        .with_context(|| format!("failed to create dir {local:?}"))?;
+
+    Ok(None)
+}
+
+pub(crate) fn remove_local(local: &Path, is_dir: bool) -> anyhow::Result<()> {
+    if is_dir {
+        std::fs::remove_dir_all(local).with_context(|| format!("failed to remove dir {local:?}"))
+    } else {
+        std::fs::remove_file(local).with_context(|| format!("failed to remove file {local:?}"))
+    }
+}
+
+pub(crate) fn local_mtime_nanos(md: &std::fs::Metadata) -> anyhow::Result<u64> {
+    Ok(md
+        .modified()
+        .with_context(|| "failed to read local mtime")?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| anyhow::anyhow!("local mtime before epoch: {e:?}"))?
+        .as_nanos() as u64)
+}
+
+pub(crate) fn resolve_local_path(
+    meta: &FileMeta,
+    mappings: &[PathMapping],
+) -> anyhow::Result<PathBuf> {
+    let mapping = best_prefix_match(&meta.path, mappings)
+        .cloned()
+        .with_context(|| format!("received file meta for unwatched path: {:?}", meta.path))?;
+
+    let relative = meta.path.strip_prefix(&mapping.strip).with_context(|| {
+        format!(
+            "failed to relativize {:?} under {:?}",
+            meta.path, mapping.strip
+        )
+    })?;
+
+    Ok(mapping.local.join(relative))
+}
+
+/// Returns the mapping whose remote root best matches `remote_file_path`,
+/// i.e. the longest-prefix (most shared parent directories) match.
+fn best_prefix_match<'a>(
+    remote_file_path: &'a Path,
+    mappings: &'a [PathMapping],
+) -> Option<&'a PathMapping> {
+    mappings
+        .iter()
+        .filter(|mapping| remote_file_path.starts_with(&mapping.remote))
+        .max_by_key(|mapping| mapping.remote.components().count())
 }

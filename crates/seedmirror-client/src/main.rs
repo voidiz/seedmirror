@@ -6,7 +6,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::{state::init_state_broker, dispatch::init_remote_watcher};
+use crate::{dispatch::init_remote_watcher, state::init_state_broker};
 
 mod cli;
 mod dispatch;

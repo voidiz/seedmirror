@@ -1,7 +1,7 @@
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
-    time::{Instant, UNIX_EPOCH},
+    time::Instant,
 };
 
 use anyhow::Context;
@@ -10,7 +10,10 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     cli::PathMapping,
-    file::{cleanup_partial, finalize_tmp, tmp_path},
+    file::{
+        cleanup_partial, create_dir, finalize_tmp, local_mtime_nanos, remove_local,
+        resolve_local_path, tmp_path,
+    },
     state::{StateBrokerMessage, StateBrokerTx},
 };
 
@@ -222,6 +225,7 @@ pub(crate) async fn prepare_sync(
             if dry_run {
                 return Ok(None);
             }
+
             remove_local(&local_path, false)?;
             create_dir(&local_path, dry_run).await
         }
@@ -237,43 +241,6 @@ fn log_replace(dry_run: bool, local: &Path, local_is_dir: bool, remote_is_dir: b
     let local_kind = if local_is_dir { "dir" } else { "file" };
     let remote_kind = if remote_is_dir { "dir" } else { "file" };
     log::info!("{verb} mismatched {local:?} (local is {local_kind}, remote is {remote_kind})");
-}
-
-fn resolve_local_path(meta: &FileMeta, mappings: &[PathMapping]) -> anyhow::Result<PathBuf> {
-    let mapping = best_prefix_match(&meta.path, mappings)
-        .cloned()
-        .with_context(|| format!("received file meta for unwatched path: {:?}", meta.path))?;
-
-    let relative = meta.path.strip_prefix(&mapping.strip).with_context(|| {
-        format!(
-            "failed to relativize {:?} under {:?}",
-            meta.path, mapping.strip
-        )
-    })?;
-
-    Ok(mapping.local.join(relative))
-}
-
-async fn create_dir(local: &Path, dry_run: bool) -> anyhow::Result<Option<PathBuf>> {
-    if dry_run {
-        log::info!("would create dir {local:?}");
-        return Ok(None);
-    }
-
-    log::info!("creating dir {local:?}");
-    tokio::fs::create_dir_all(local)
-        .await
-        .with_context(|| format!("failed to create dir {local:?}"))?;
-
-    Ok(None)
-}
-
-fn remove_local(local: &Path, is_dir: bool) -> anyhow::Result<()> {
-    if is_dir {
-        std::fs::remove_dir_all(local).with_context(|| format!("failed to remove dir {local:?}"))
-    } else {
-        std::fs::remove_file(local).with_context(|| format!("failed to remove file {local:?}"))
-    }
 }
 
 /// Why local file state does not match remote `meta`
@@ -371,15 +338,6 @@ pub(crate) fn set_syncing_path(state_tx: &StateBrokerTx, meta: &FileMeta, local:
     }
 }
 
-fn local_mtime_nanos(md: &std::fs::Metadata) -> anyhow::Result<u64> {
-    Ok(md
-        .modified()
-        .with_context(|| "failed to read local mtime")?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| anyhow::anyhow!("local mtime before epoch: {e:?}"))?
-        .as_nanos() as u64)
-}
-
 fn report_progress(
     state_tx: &StateBrokerTx,
     written: u64,
@@ -439,16 +397,4 @@ fn fmt_hms(total_secs: u64) -> String {
         (total_secs / 60) % 60,
         total_secs % 60
     )
-}
-
-/// Returns the mapping whose remote root best matches `remote_file_path`,
-/// i.e. the longest-prefix (most shared parent directories) match.
-fn best_prefix_match<'a>(
-    remote_file_path: &'a Path,
-    mappings: &'a [PathMapping],
-) -> Option<&'a PathMapping> {
-    mappings
-        .iter()
-        .filter(|mapping| remote_file_path.starts_with(&mapping.remote))
-        .max_by_key(|mapping| mapping.remote.components().count())
 }
